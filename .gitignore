@@ -1,0 +1,12 @@
+.gradle/
+.idea/
+.build-tools/
+.android-sdk/
+local.properties
+**/build/
+*.jks
+*.keystore
+captures/
+output/
+*.apk
+.DS_Store
