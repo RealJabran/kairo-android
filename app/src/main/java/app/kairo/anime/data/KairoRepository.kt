@@ -95,7 +95,12 @@ class KairoRepository(private val context: Context) {
     }
 
     fun removeDownload(record: DownloadRecord, deleteFile: Boolean) {
-        if (deleteFile) runCatching { context.contentResolver.delete(Uri.parse(record.uri), null, null) }
+        if (deleteFile) {
+            runCatching { context.contentResolver.delete(Uri.parse(record.uri), null, null) }
+            record.subtitleUri.takeIf(String::isNotBlank)?.let { uri ->
+                runCatching { context.contentResolver.delete(Uri.parse(uri), null, null) }
+            }
+        }
         preferences.removeDownload(record.id)
     }
 
@@ -103,7 +108,7 @@ class KairoRepository(private val context: Context) {
         adapters[source.kind] ?: error("Unsupported source type: ${source.kind}")
 
     companion object {
-        const val USER_AGENT = "Mozilla/5.0 (Android 14; Mobile) AppleWebKit/537.36 Kairo/1.2"
+        const val USER_AGENT = "Mozilla/5.0 (Android 14; Mobile) AppleWebKit/537.36 Kairo/1.4"
 
         fun resolveUrl(value: String, base: String): String {
             if (value.startsWith("http://") || value.startsWith("https://")) return value

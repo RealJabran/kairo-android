@@ -77,7 +77,7 @@ fun KairoAppRoot(viewModel: MainViewModel) {
         }
     }
 
-    val openUri: (String, String, String, String, String, String) -> Unit = { uri, title, meta, recordId, referer, authToken ->
+    val openUri: (String, String, String, String, String, String, String) -> Unit = { uri, title, meta, recordId, referer, authToken, subtitleUri ->
         context.startActivity(Intent(context, PlayerActivity::class.java).apply {
             data = uri.toUri()
             putExtra(PlayerActivity.EXTRA_TITLE, title)
@@ -85,17 +85,18 @@ fun KairoAppRoot(viewModel: MainViewModel) {
             putExtra(PlayerActivity.EXTRA_RECORD_ID, recordId)
             putExtra(PlayerActivity.EXTRA_REFERER, referer)
             putExtra(PlayerActivity.EXTRA_AUTH_TOKEN, authToken)
+            putExtra(PlayerActivity.EXTRA_SUBTITLE_URI, subtitleUri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         })
     }
 
     val openPlayer: (DownloadRecord) -> Unit = { record ->
-        openUri(record.uri, "${record.animeTitle} • ${record.episodeLabel}", "${record.language} • ${record.quality}", record.id, "", "")
+        openUri(record.uri, "${record.animeTitle} • ${record.episodeLabel}", "${record.language} • ${record.quality}", record.id, "", "", record.subtitleUri)
     }
 
     LaunchedEffect(viewModel.playRequest) {
         viewModel.playRequest?.let { request ->
-            openUri(request.uri, request.title, request.meta, "", request.referer, request.authToken)
+            openUri(request.uri, request.title, request.meta, "", request.referer, request.authToken, "")
             viewModel.consumePlayRequest()
         }
     }
@@ -677,7 +678,10 @@ private fun DownloadCard(record: DownloadRecord, progress: PlaybackProgress?, on
             }
             Column(Modifier.padding(start = 13.dp).weight(1f)) {
                 Text(record.animeTitle, fontWeight = FontWeight.ExtraBold, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text("${record.episodeLabel} • ${record.language} • ${record.quality}", color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp))
+                Text(
+                    "${record.episodeLabel} • ${record.language} • ${record.quality}${if (record.subtitleUri.isNotBlank()) " • CC" else ""}",
+                    color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 3.dp)
+                )
                 Row(Modifier.padding(top = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Text(formatBytes(record.bytes), color = Teal, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                     progress?.takeIf { it.percent > 0 }?.let { Text("  •  ${it.percent}% watched", color = Violet, fontSize = 10.sp, fontWeight = FontWeight.Bold) }
@@ -694,6 +698,7 @@ private fun DownloadCard(record: DownloadRecord, progress: PlaybackProgress?, on
 @Composable
 private fun SettingsScreen(viewModel: MainViewModel, chooseFolder: () -> Unit, chooseMediaFolder: () -> Unit, modifier: Modifier = Modifier) {
     var addSource by remember { mutableStateOf(false) }
+    var captionSetup by remember { mutableStateOf(false) }
     var languageExpanded by remember { mutableStateOf(false) }
     val prefs = viewModel.repository.preferences
     LazyColumn(modifier.fillMaxSize(), contentPadding = PaddingValues(18.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -734,6 +739,25 @@ private fun SettingsScreen(viewModel: MainViewModel, chooseFolder: () -> Unit, c
                 onCheckedChange = viewModel::setInstantPlayback
             )
         }
+        item {
+            SettingsCard(
+                icon = Icons.Outlined.Subtitles,
+                title = "Online captions",
+                subtitle = if (viewModel.openSubtitlesConnected) "Connected • ${viewModel.subtitleLanguage}" else "Connect OpenSubtitles to search without a file",
+                tint = Violet,
+                onClick = { captionSetup = true }
+            )
+        }
+        if (viewModel.openSubtitlesConnected) item {
+            SettingsSwitchCard(
+                icon = Icons.Outlined.DownloadDone,
+                title = "Save captions with downloads",
+                subtitle = if (viewModel.autoDownloadCaptions) "On • saves the best ${viewModel.subtitleLanguage} match" else "Off • find captions manually in the player",
+                tint = Violet,
+                checked = viewModel.autoDownloadCaptions,
+                onCheckedChange = viewModel::updateAutoDownloadCaptions
+            )
+        }
         item { SettingsLabel("CONTENT SOURCES") }
         item {
             Surface(color = Surface, shape = RoundedCornerShape(22.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(.06f))) {
@@ -772,6 +796,60 @@ private fun SettingsScreen(viewModel: MainViewModel, chooseFolder: () -> Unit, c
         }
     }
     if (addSource) AddSourceDialog(viewModel, { addSource = false })
+    if (captionSetup) OpenSubtitlesDialog(viewModel, { captionSetup = false })
+}
+
+@Composable
+private fun OpenSubtitlesDialog(viewModel: MainViewModel, dismiss: () -> Unit) {
+    var apiKey by remember { mutableStateOf("") }
+    var username by remember { mutableStateOf("") }
+    var password by remember { mutableStateOf("") }
+    var language by remember { mutableStateOf(viewModel.subtitleLanguage) }
+    AlertDialog(
+        onDismissRequest = dismiss,
+        containerColor = Surface,
+        title = { Text(if (viewModel.openSubtitlesConnected) "Online captions" else "Connect OpenSubtitles", fontWeight = FontWeight.Black) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(11.dp)) {
+                if (viewModel.openSubtitlesConnected) {
+                    Text("Kairo can search and attach ${viewModel.subtitleLanguage} captions directly in the player.", color = Muted, fontSize = 12.sp)
+                } else {
+                    Text("Enter your OpenSubtitles.com username, password, and consumer API key. Your password is used only to sign in and is never saved.", color = Muted, fontSize = 12.sp, lineHeight = 17.sp)
+                    OutlinedTextField(apiKey, { apiKey = it }, label = { Text("Consumer API key") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(username, { username = it }, label = { Text("Username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                    OutlinedTextField(password, { password = it }, label = { Text("Password") }, visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth())
+                    Text("PREFERRED CAPTION LANGUAGE", color = Violet, fontWeight = FontWeight.Black, fontSize = 9.sp, letterSpacing = 1.1.sp)
+                    LazyRow(horizontalArrangement = Arrangement.spacedBy(7.dp)) {
+                        items(listOf("English", "Hindi", "Urdu", "Arabic", "Japanese", "Spanish", "French", "German")) { option ->
+                            FilterChip(
+                                selected = language == option, onClick = { language = option }, label = { Text(option) },
+                                colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Violet, selectedLabelColor = Ink)
+                            )
+                        }
+                    }
+                }
+                viewModel.captionValidation?.let {
+                    Text(it, color = if (it.startsWith("Connecting")) Teal else Danger, fontSize = 11.sp)
+                }
+            }
+        },
+        confirmButton = {
+            if (viewModel.openSubtitlesConnected) {
+                Button(onClick = dismiss, colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = Ink)) { Text("DONE", fontWeight = FontWeight.Black) }
+            } else {
+                Button(
+                    onClick = { viewModel.connectOpenSubtitles(apiKey, username, password, language) { if (it) dismiss() } },
+                    enabled = apiKey.isNotBlank() && username.isNotBlank() && password.isNotBlank(),
+                    colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = Ink)
+                ) { Text("CONNECT", fontWeight = FontWeight.Black) }
+            }
+        },
+        dismissButton = {
+            if (viewModel.openSubtitlesConnected) {
+                TextButton(onClick = { viewModel.disconnectOpenSubtitles(); dismiss() }) { Text("Disconnect", color = Danger) }
+            } else TextButton(dismiss) { Text("Cancel") }
+        }
+    )
 }
 
 @Composable

@@ -9,6 +9,7 @@ import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import app.kairo.anime.data.*
+import app.kairo.anime.data.captions.OpenSubtitlesClient
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -68,6 +69,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     var playRequest by mutableStateOf<PlayRequest?>(null)
         private set
     var instantPlaybackEnabled by mutableStateOf(repository.preferences.instantPlaybackEnabled)
+        private set
+    var openSubtitlesConnected by mutableStateOf(repository.preferences.openSubtitlesConnected)
+        private set
+    var autoDownloadCaptions by mutableStateOf(repository.preferences.autoDownloadCaptions)
+        private set
+    var subtitleLanguage by mutableStateOf(repository.preferences.subtitleLanguage)
+        private set
+    var captionValidation by mutableStateOf<String?>(null)
         private set
 
     private var searchJob: Job? = null
@@ -278,6 +287,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setInstantPlayback(enabled: Boolean) {
         repository.preferences.instantPlaybackEnabled = enabled
         instantPlaybackEnabled = enabled
+    }
+
+    fun connectOpenSubtitles(
+        apiKey: String,
+        username: String,
+        password: String,
+        language: String,
+        done: (Boolean) -> Unit
+    ) {
+        viewModelScope.launch {
+            captionValidation = "Connecting to OpenSubtitles…"
+            runCatching { OpenSubtitlesClient(getApplication()).login(apiKey, username, password) }
+                .onSuccess { session ->
+                    repository.preferences.openSubtitlesApiKey = apiKey.trim()
+                    repository.preferences.openSubtitlesToken = session.token
+                    repository.preferences.openSubtitlesBaseUrl = session.baseUrl
+                    repository.preferences.subtitleLanguage = language
+                    openSubtitlesConnected = true
+                    subtitleLanguage = language
+                    captionValidation = null
+                    done(true)
+                }
+                .onFailure { error ->
+                    captionValidation = error.message ?: "Could not connect to OpenSubtitles"
+                    done(false)
+                }
+        }
+    }
+
+    fun disconnectOpenSubtitles() {
+        repository.preferences.disconnectOpenSubtitles()
+        openSubtitlesConnected = false
+        autoDownloadCaptions = false
+        captionValidation = null
+    }
+
+    fun updateAutoDownloadCaptions(enabled: Boolean) {
+        if (!openSubtitlesConnected) return
+        repository.preferences.autoDownloadCaptions = enabled
+        autoDownloadCaptions = enabled
     }
 
     fun removeSource(id: String) { repository.preferences.removeSource(id); sources = repository.preferences.sources(); refreshHome() }

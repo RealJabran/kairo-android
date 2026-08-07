@@ -76,7 +76,8 @@ data class DownloadRecord(
     val sourceId: String = "anidb",
     val episodeNumber: Int = 0,
     val episodeId: String = "",
-    val seasonNumber: Int = 0
+    val seasonNumber: Int = 0,
+    val subtitleUri: String = ""
 )
 
 data class PlaybackProgress(

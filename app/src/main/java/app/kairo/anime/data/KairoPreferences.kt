@@ -29,6 +29,34 @@ class KairoPreferences(context: Context) {
         get() = prefs.getBoolean("instant_playback", false)
         set(value) { prefs.edit().putBoolean("instant_playback", value).apply() }
 
+    var openSubtitlesApiKey: String
+        get() = prefs.getString("opensubtitles_api_key", "").orEmpty()
+        set(value) { prefs.edit().putString("opensubtitles_api_key", value).apply() }
+
+    var openSubtitlesToken: String
+        get() = prefs.getString("opensubtitles_token", "").orEmpty()
+        set(value) { prefs.edit().putString("opensubtitles_token", value).apply() }
+
+    var openSubtitlesBaseUrl: String
+        get() = prefs.getString("opensubtitles_base_url", "https://api.opensubtitles.com/api/v1") ?: "https://api.opensubtitles.com/api/v1"
+        set(value) { prefs.edit().putString("opensubtitles_base_url", value).apply() }
+
+    var subtitleLanguage: String
+        get() = prefs.getString("subtitle_language", "English") ?: "English"
+        set(value) { prefs.edit().putString("subtitle_language", value).apply() }
+
+    var autoDownloadCaptions: Boolean
+        get() = prefs.getBoolean("auto_download_captions", false)
+        set(value) { prefs.edit().putBoolean("auto_download_captions", value).apply() }
+
+    val openSubtitlesConnected: Boolean
+        get() = openSubtitlesApiKey.isNotBlank() && openSubtitlesToken.isNotBlank()
+
+    fun disconnectOpenSubtitles() {
+        prefs.edit().remove("opensubtitles_api_key").remove("opensubtitles_token").remove("opensubtitles_base_url")
+            .putBoolean("auto_download_captions", false).apply()
+    }
+
     fun sources(): List<SourceDefinition> {
         val builtIns = listOf(
             SourceDefinition("anidb", "Kairo Stream", "https://anidb.app", true, true, SourceKind.KAIRO_COMPATIBLE),
@@ -110,7 +138,7 @@ class KairoPreferences(context: Context) {
                     animeId = item.optString("animeId"), animeImageUrl = item.optString("animeImageUrl"),
                     animeUrl = item.optString("animeUrl"), sourceId = item.optString("sourceId", "anidb"),
                     episodeNumber = item.optInt("episodeNumber"), episodeId = item.optString("episodeId"),
-                    seasonNumber = item.optInt("seasonNumber")
+                    seasonNumber = item.optInt("seasonNumber"), subtitleUri = item.optString("subtitleUri")
                 )
             }.sortedByDescending { it.completedAt }
         }.getOrDefault(emptyList())
@@ -134,6 +162,7 @@ class KairoPreferences(context: Context) {
                 put("animeId", item.animeId); put("animeImageUrl", item.animeImageUrl); put("animeUrl", item.animeUrl)
                 put("sourceId", item.sourceId); put("episodeNumber", item.episodeNumber)
                 put("episodeId", item.episodeId); put("seasonNumber", item.seasonNumber)
+                put("subtitleUri", item.subtitleUri)
             })
         }
         prefs.edit().putString("downloads", array.toString()).commit()
@@ -150,6 +179,7 @@ class KairoPreferences(context: Context) {
                 put("animeId", item.animeId); put("animeImageUrl", item.animeImageUrl); put("animeUrl", item.animeUrl)
                 put("sourceId", item.sourceId); put("episodeNumber", item.episodeNumber)
                 put("episodeId", item.episodeId); put("seasonNumber", item.seasonNumber)
+                put("subtitleUri", item.subtitleUri)
             })
         }
         prefs.edit().putString("downloads", array.toString()).apply()

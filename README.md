@@ -16,6 +16,9 @@ Kairo is a polished personal Android anime browser, watchlist, and offline libra
 - Media3 player with seeking, speed, Fit/Crop/Stretch/100% modes, external caption files, and picture-in-picture
 - Playback-aware screen wake lock so the display remains on while a video is playing or buffering
 - Download-first playback by default, with an optional Instant playback setting that shows both **Watch now** and **Download**
+- Full-screen left/right tap zones for quick 10-second rewind and forward
+- One-tap display-mode cycling through Fit, Crop, Stretch, and 100%
+- OpenSubtitles search and direct caption attachment from the player, plus optional sidecar captions for downloads
 - A provider-adapter system for streaming catalogs, AniList discovery, Jellyfin, and on-device folders
 
 ## Sources
@@ -30,6 +33,8 @@ Kairo is a polished personal Android anime browser, watchlist, and offline libra
 To connect Jellyfin, open **Settings → Add a source → Jellyfin**, enter the server URL and an access token/API key, then validate the connection. Prefer HTTPS whenever the server is reachable outside your home network. Kairo keeps the token in private app storage and disables Android backup for the app.
 
 Kairo defaults to downloading remote episodes before playback. To stream without downloading, enable **Settings → Instant playback**. Episode sheets will then offer both **Watch now** and **Download**. Local files always remain directly playable.
+
+For captions without a local file, open **Settings → Online captions** and connect an OpenSubtitles.com account using its consumer API key. Kairo uses the password only for the login request and never saves it. The player can then search and attach a caption directly. **Save captions with downloads** optionally stores the best language match beside each newly downloaded episode. OpenSubtitles access tokens expire periodically; reconnect in Settings if the service reports an expired connection.
 
 For an on-device library, choose **Settings → On-device anime folder**. A useful layout is:
 
@@ -56,7 +61,7 @@ chmod +x build-apk.sh
 The build script downloads a pinned Gradle distribution and lets the Android Gradle plugin provision the required SDK. The test APK is written to:
 
 ```text
-output/Kairo-1.3.0-test.apk
+output/Kairo-1.4.0-test.apk
 ```
 
 You can also open the project directly in a recent Android Studio release and run the `app` configuration.
