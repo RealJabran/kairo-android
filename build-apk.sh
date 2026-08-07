@@ -42,6 +42,6 @@ printf 'sdk.dir=%s\n' "$SDK_DIR" > "$PROJECT_DIR/local.properties"
 echo "Building Kairo..."
 "$GRADLE_HOME/bin/gradle" --no-daemon -Pandroid.builder.sdkDownload=true :app:assembleDebug
 
-cp "$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk" "$OUTPUT_DIR/Kairo-1.1.0-test.apk"
+cp "$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk" "$OUTPUT_DIR/Kairo-1.3.0-test.apk"
 echo
-echo "APK ready: $OUTPUT_DIR/Kairo-1.1.0-test.apk"
+echo "APK ready: $OUTPUT_DIR/Kairo-1.3.0-test.apk"

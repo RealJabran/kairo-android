@@ -11,6 +11,7 @@ import android.os.Bundle
 import android.provider.OpenableColumns
 import android.util.Rational
 import android.view.View
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -54,6 +55,9 @@ import androidx.media3.common.Player
 import androidx.media3.common.VideoSize
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.ui.AspectRatioFrameLayout
 import androidx.media3.ui.PlayerView
 import app.kairo.anime.data.KairoPreferences
@@ -77,13 +81,17 @@ class PlayerActivity : ComponentActivity() {
         recordId = intent.getStringExtra(EXTRA_RECORD_ID).orEmpty()
         val title = intent.getStringExtra(EXTRA_TITLE).orEmpty()
         val meta = intent.getStringExtra(EXTRA_META).orEmpty()
+        val referer = intent.getStringExtra(EXTRA_REFERER).orEmpty()
+        val authToken = intent.getStringExtra(EXTRA_AUTH_TOKEN).orEmpty()
         val startPosition = preferences.playbackProgress().firstOrNull { it.recordId == recordId }
             ?.takeIf { it.percent in 1..94 }?.positionMs ?: 0
         setContent {
             KairoTheme {
                 PlayerScreen(
                     uri = uri.toString(), title = title, meta = meta, startPositionMs = startPosition,
-                    onBack = { finish() }, onPlayer = { player = it }, onProgress = ::persistProgress
+                    referer = referer, authToken = authToken,
+                    onBack = { finish() }, onPlayer = { player = it }, onProgress = ::persistProgress,
+                    onPlaybackActive = ::setScreenAwake
                 )
             }
         }
@@ -128,6 +136,7 @@ class PlayerActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
+        setScreenAwake(false)
         player?.let { persistProgress(it.currentPosition, it.duration) }
         player?.release()
         player = null
@@ -141,10 +150,17 @@ class PlayerActivity : ComponentActivity() {
         )
     }
 
+    private fun setScreenAwake(awake: Boolean) {
+        if (awake) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
     companion object {
         const val EXTRA_TITLE = "title"
         const val EXTRA_META = "meta"
         const val EXTRA_RECORD_ID = "record_id"
+        const val EXTRA_REFERER = "referer"
+        const val EXTRA_AUTH_TOKEN = "auth_token"
         const val EXTRA_ANIME_TITLE = "anime_title"
         const val EXTRA_EPISODE_LABEL = "episode_label"
     }
@@ -165,9 +181,12 @@ private fun PlayerScreen(
     title: String,
     meta: String,
     startPositionMs: Long,
+    referer: String,
+    authToken: String,
     onBack: () -> Unit,
     onPlayer: (ExoPlayer) -> Unit,
-    onProgress: (Long, Long) -> Unit
+    onProgress: (Long, Long) -> Unit,
+    onPlaybackActive: (Boolean) -> Unit
 ) {
     val context = LocalContext.current
     var error by remember { mutableStateOf<String?>(null) }
@@ -193,8 +212,19 @@ private fun PlayerScreen(
         return builder.build()
     }
 
-    val player = remember(uri) {
-        ExoPlayer.Builder(context).build().apply {
+    val player = remember(uri, referer, authToken) {
+        val requestHeaders = buildMap {
+            if (referer.isNotBlank()) put("Referer", referer)
+            if (authToken.isNotBlank()) put("X-Emby-Token", authToken)
+        }
+        val httpFactory = DefaultHttpDataSource.Factory()
+            .setUserAgent(app.kairo.anime.data.KairoRepository.USER_AGENT)
+            .setAllowCrossProtocolRedirects(true)
+        if (requestHeaders.isNotEmpty()) httpFactory.setDefaultRequestProperties(requestHeaders)
+        val dataSourceFactory = DefaultDataSource.Factory(context, httpFactory)
+        ExoPlayer.Builder(context)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(dataSourceFactory))
+            .build().apply {
             setMediaItem(MediaItem.fromUri(uri))
             if (startPositionMs > 0) seekTo(startPositionMs)
             playWhenReady = true
@@ -206,6 +236,10 @@ private fun PlayerScreen(
                 override fun onPlaybackStateChanged(playbackState: Int) {
                     if (playbackState == Player.STATE_READY) error = null
                     if (playbackState == Player.STATE_ENDED) onProgress(duration, duration)
+                    onPlaybackActive(playWhenReady && playbackState != Player.STATE_IDLE && playbackState != Player.STATE_ENDED)
+                }
+                override fun onPlayWhenReadyChanged(playWhenReady: Boolean, reason: Int) {
+                    onPlaybackActive(playWhenReady && playbackState != Player.STATE_IDLE && playbackState != Player.STATE_ENDED)
                 }
                 override fun onVideoSizeChanged(size: VideoSize) { videoSize = size }
             })
@@ -231,7 +265,7 @@ private fun PlayerScreen(
 
     DisposableEffect(player) {
         onPlayer(player)
-        onDispose { }
+        onDispose { onPlaybackActive(false) }
     }
     LaunchedEffect(player) {
         while (true) {
@@ -266,7 +300,7 @@ private fun PlayerScreen(
                     setShowPreviousButton(false)
                     setShowBuffering(PlayerView.SHOW_BUFFERING_WHEN_PLAYING)
                     setControllerVisibilityListener(PlayerView.ControllerVisibilityListener { visibility -> controlsVisible = visibility == View.VISIBLE })
-                    keepScreenOn = true
+                    keepScreenOn = false
                 }
             },
             update = { view -> view.player = player; view.resizeMode = screenMode.resizeMode },

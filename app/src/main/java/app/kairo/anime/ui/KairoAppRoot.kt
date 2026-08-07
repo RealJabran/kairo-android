@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -69,17 +70,34 @@ fun KairoAppRoot(viewModel: MainViewModel) {
             viewModel.repository.preferences.downloadTreeUri = uri.toString()
         }
     }
+    val mediaFolderLauncher = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        if (uri != null) {
+            runCatching { context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION) }
+            viewModel.localFolderChanged(uri.toString())
+        }
+    }
 
-    val openPlayer: (DownloadRecord) -> Unit = { record ->
+    val openUri: (String, String, String, String, String, String) -> Unit = { uri, title, meta, recordId, referer, authToken ->
         context.startActivity(Intent(context, PlayerActivity::class.java).apply {
-            data = record.uri.toUri()
-            putExtra(PlayerActivity.EXTRA_TITLE, "${record.animeTitle} • ${record.episodeLabel}")
-            putExtra(PlayerActivity.EXTRA_META, "${record.language} • ${record.quality}")
-            putExtra(PlayerActivity.EXTRA_RECORD_ID, record.id)
-            putExtra(PlayerActivity.EXTRA_ANIME_TITLE, record.animeTitle)
-            putExtra(PlayerActivity.EXTRA_EPISODE_LABEL, record.episodeLabel)
+            data = uri.toUri()
+            putExtra(PlayerActivity.EXTRA_TITLE, title)
+            putExtra(PlayerActivity.EXTRA_META, meta)
+            putExtra(PlayerActivity.EXTRA_RECORD_ID, recordId)
+            putExtra(PlayerActivity.EXTRA_REFERER, referer)
+            putExtra(PlayerActivity.EXTRA_AUTH_TOKEN, authToken)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         })
+    }
+
+    val openPlayer: (DownloadRecord) -> Unit = { record ->
+        openUri(record.uri, "${record.animeTitle} • ${record.episodeLabel}", "${record.language} • ${record.quality}", record.id, "", "")
+    }
+
+    LaunchedEffect(viewModel.playRequest) {
+        viewModel.playRequest?.let { request ->
+            openUri(request.uri, request.title, request.meta, "", request.referer, request.authToken)
+            viewModel.consumePlayRequest()
+        }
     }
 
     BackHandler(enabled = viewModel.downloadChoice != null || viewModel.details != null || tab != MainTab.Discover) {
@@ -99,7 +117,8 @@ fun KairoAppRoot(viewModel: MainViewModel) {
                 onEpisode = { viewModel.chooseEpisode(viewModel.details!!.anime, it) },
                 downloadsFor = { viewModel.downloadsFor(viewModel.details!!.anime, it) },
                 watchlisted = viewModel.isWatchlisted(viewModel.details!!.anime),
-                onToggleWatchlist = { viewModel.toggleWatchlist(viewModel.details!!.anime) }
+                onToggleWatchlist = { viewModel.toggleWatchlist(viewModel.details!!.anime) },
+                onFindPlayable = { anime -> viewModel.findPlayable(anime); tab = MainTab.Discover }
             )
         } else {
             Scaffold(
@@ -122,7 +141,12 @@ fun KairoAppRoot(viewModel: MainViewModel) {
                         onCancel = viewModel::cancelDownload,
                         modifier = Modifier.padding(padding)
                     )
-                    MainTab.Settings -> SettingsScreen(viewModel, { folderLauncher.launch(null) }, Modifier.padding(padding))
+                    MainTab.Settings -> SettingsScreen(
+                        viewModel = viewModel,
+                        chooseFolder = { folderLauncher.launch(null) },
+                        chooseMediaFolder = { mediaFolderLauncher.launch(null) },
+                        modifier = Modifier.padding(padding)
+                    )
                 }
             }
         }
@@ -134,7 +158,9 @@ fun KairoAppRoot(viewModel: MainViewModel) {
                 onLanguage = viewModel::selectLanguage,
                 onQuality = viewModel::selectQuality,
                 onPlayExisting = { record -> viewModel.dismissChoice(); openPlayer(record) },
-                onDownload = viewModel::startDownload
+                onPlayNow = viewModel::playSelected,
+                onDownload = viewModel::startDownload,
+                instantPlaybackEnabled = viewModel.instantPlaybackEnabled
             )
         }
     }
@@ -317,7 +343,8 @@ private fun DetailScreen(
     onEpisode: (Episode) -> Unit,
     downloadsFor: (Episode) -> List<DownloadRecord>,
     watchlisted: Boolean,
-    onToggleWatchlist: () -> Unit
+    onToggleWatchlist: () -> Unit,
+    onFindPlayable: (Anime) -> Unit
 ) {
     Box(Modifier.fillMaxSize().background(Ink).windowInsetsPadding(WindowInsets.safeDrawing)) {
         LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 28.dp)) {
@@ -350,6 +377,26 @@ private fun DetailScreen(
             if (details.description.isNotBlank()) item {
                 Text(details.description, color = Muted, style = MaterialTheme.typography.bodyMedium, maxLines = 5, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(horizontal = 20.dp, vertical = 14.dp))
             }
+            if (details.sourceNotice.isNotBlank()) item {
+                Surface(
+                    color = Violet.copy(.10f),
+                    shape = RoundedCornerShape(20.dp),
+                    border = androidx.compose.foundation.BorderStroke(1.dp, Violet.copy(.28f)),
+                    modifier = Modifier.fillMaxWidth().padding(horizontal = 18.dp, vertical = 8.dp)
+                ) {
+                    Row(Modifier.padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.Outlined.Info, null, tint = Violet)
+                        Text(details.sourceNotice, color = Cloud, fontSize = 12.sp, lineHeight = 17.sp, modifier = Modifier.padding(horizontal = 12.dp).weight(1f))
+                        if (!loading && details.episodes.isEmpty()) {
+                            FilledTonalButton(
+                                onClick = { onFindPlayable(details.anime) },
+                                colors = ButtonDefaults.filledTonalButtonColors(containerColor = Violet, contentColor = Ink),
+                                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
+                            ) { Text("FIND", fontSize = 10.sp, fontWeight = FontWeight.Black) }
+                        }
+                    }
+                }
+            }
             item { SectionTitle("Episodes", if (loading) "Loading…" else "${details.episodes.size} available", Modifier.padding(horizontal = 20.dp, vertical = 10.dp)) }
             if (loading) item { LoadingPane("Finding every available language…") }
             items(details.episodes, key = { it.id }) { episode ->
@@ -368,10 +415,14 @@ private fun EpisodeRow(episode: Episode, existing: List<DownloadRecord>, onClick
     ) {
         Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
             Box(Modifier.size(48.dp).clip(RoundedCornerShape(15.dp)).background(Brush.linearGradient(listOf(Violet.copy(.28f), Teal.copy(.18f)))), contentAlignment = Alignment.Center) {
-                Text(episode.number.toString(), color = Cloud, fontWeight = FontWeight.Black)
+                Text(
+                    if (episode.seasonNumber > 0) "S${episode.seasonNumber}\nE${episode.number}" else episode.number.toString(),
+                    color = Cloud, fontWeight = FontWeight.Black, fontSize = if (episode.seasonNumber > 0) 10.sp else 14.sp,
+                    lineHeight = 12.sp
+                )
             }
             Column(Modifier.padding(start = 13.dp).weight(1f)) {
-                Text(episode.title.ifBlank { "Episode ${episode.number}" }, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(episode.title.ifBlank { episode.label }, fontWeight = FontWeight.Bold, maxLines = 1, overflow = TextOverflow.Ellipsis)
                 Text(
                     when {
                         existing.isNotEmpty() -> "Downloaded • ${existing.joinToString { it.quality }}"
@@ -398,11 +449,13 @@ private fun DownloadChoiceSheet(
     onLanguage: (LanguageOption) -> Unit,
     onQuality: (QualityOption) -> Unit,
     onPlayExisting: (DownloadRecord) -> Unit,
-    onDownload: () -> Boolean
+    onPlayNow: () -> Boolean,
+    onDownload: () -> Boolean,
+    instantPlaybackEnabled: Boolean
 ) {
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = InkRaised, contentColor = Cloud, dragHandle = { BottomSheetDefaults.DragHandle(color = Muted) }) {
         Column(Modifier.fillMaxWidth().verticalScroll(rememberScrollState()).padding(start = 20.dp, end = 20.dp, bottom = 30.dp)) {
-            Text("Download episode ${state.episode.number}", style = MaterialTheme.typography.headlineMedium)
+            Text(state.episode.label, style = MaterialTheme.typography.headlineMedium)
             Text(state.anime.title, color = Muted, modifier = Modifier.padding(top = 4.dp), maxLines = 1, overflow = TextOverflow.Ellipsis)
             if (state.existingDownloads.isNotEmpty()) {
                 Surface(
@@ -450,7 +503,10 @@ private fun DownloadChoiceSheet(
                         label = {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
                                 Text(quality.label, fontWeight = FontWeight.Bold)
-                                if (quality.estimatedBytes > 0) Text("~${formatBytes(quality.estimatedBytes)}", fontSize = 9.sp)
+                                if (quality.estimatedBytes > 0) Text(
+                                    (if (quality.delivery == DeliveryKind.HLS) "~" else "") + formatBytes(quality.estimatedBytes),
+                                    fontSize = 9.sp
+                                )
                             }
                         },
                         colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Violet, selectedLabelColor = Ink),
@@ -461,17 +517,44 @@ private fun DownloadChoiceSheet(
             state.selectedQuality?.takeIf { it.estimatedBytes > 0 }?.let { quality ->
                 Row(Modifier.padding(top = 11.dp), verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.Outlined.Storage, null, tint = Violet, modifier = Modifier.size(16.dp))
-                    Text("Estimated download: ~${formatBytes(quality.estimatedBytes)}", color = Muted, fontSize = 11.sp, modifier = Modifier.padding(start = 7.dp))
+                    Text(
+                        when (quality.delivery) {
+                            DeliveryKind.HLS -> "Estimated download: ~${formatBytes(quality.estimatedBytes)}"
+                            DeliveryKind.DIRECT -> "Original file size: ${formatBytes(quality.estimatedBytes)}"
+                            DeliveryKind.LOCAL -> "File size: ${formatBytes(quality.estimatedBytes)}"
+                        },
+                        color = Muted, fontSize = 11.sp, modifier = Modifier.padding(start = 7.dp)
+                    )
                 }
             }
             state.error?.let { Text(it, color = Danger, fontSize = 12.sp, modifier = Modifier.padding(top = 14.dp)) }
-            Button(
-                onClick = { onDownload() }, enabled = !state.loading && state.selectedQuality != null,
-                shape = RoundedCornerShape(18.dp), colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = Ink),
-                modifier = Modifier.fillMaxWidth().height(56.dp).padding(top = 16.dp)
-            ) {
-                Icon(Icons.Filled.Download, null)
-                Text(if (state.existingDownloads.isEmpty()) "DOWNLOAD" else "DOWNLOAD ANOTHER VERSION", fontWeight = FontWeight.Black, letterSpacing = .7.sp, modifier = Modifier.padding(start = 8.dp))
+            val selectedDelivery = state.selectedQuality?.delivery
+            if (selectedDelivery == DeliveryKind.LOCAL || (instantPlaybackEnabled && selectedDelivery != null)) {
+                Button(
+                    onClick = { onPlayNow() }, enabled = !state.loading,
+                    shape = RoundedCornerShape(18.dp), colors = ButtonDefaults.buttonColors(containerColor = Violet, contentColor = Ink),
+                    modifier = Modifier.fillMaxWidth().height(56.dp).padding(top = 16.dp)
+                ) {
+                    Icon(Icons.Filled.PlayArrow, null)
+                    Text(if (selectedDelivery == DeliveryKind.LOCAL) "PLAY FROM DEVICE" else "WATCH NOW", fontWeight = FontWeight.Black, letterSpacing = .7.sp, modifier = Modifier.padding(start = 8.dp))
+                }
+            }
+            if (selectedDelivery != DeliveryKind.LOCAL) {
+                Button(
+                    onClick = { onDownload() }, enabled = !state.loading && state.selectedQuality != null,
+                    shape = RoundedCornerShape(18.dp), colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = Ink),
+                    modifier = Modifier.fillMaxWidth().height(56.dp).padding(top = 10.dp)
+                ) {
+                    Icon(Icons.Filled.Download, null)
+                    Text(if (state.existingDownloads.isEmpty()) "DOWNLOAD" else "DOWNLOAD ANOTHER VERSION", fontWeight = FontWeight.Black, letterSpacing = .7.sp, modifier = Modifier.padding(start = 8.dp))
+                }
+            }
+            if (!instantPlaybackEnabled && selectedDelivery != null && selectedDelivery != DeliveryKind.LOCAL) {
+                Text(
+                    "Download-first mode is on. Enable Instant playback in Settings to also show Watch now.",
+                    color = Muted, fontSize = 10.sp, lineHeight = 15.sp,
+                    modifier = Modifier.fillMaxWidth().padding(top = 10.dp)
+                )
             }
         }
     }
@@ -562,9 +645,10 @@ private fun ActiveDownloadCard(info: WorkInfo, onCancel: () -> Unit) {
     val bytes = info.progress.getLong("bytes", 0)
     val totalBytes = info.progress.getLong("totalBytes", 0)
     val speed = info.progress.getLong("bytesPerSecond", 0)
+    val totalIsEstimate = info.progress.getBoolean("totalIsEstimate", true)
     val telemetry = when {
         bytes <= 0 -> "Connecting to stream…"
-        totalBytes > 0 -> "${formatBytes(bytes)} of ~${formatBytes(totalBytes)}  •  ${formatRate(speed)}"
+        totalBytes > 0 -> "${formatBytes(bytes)} of ${if (totalIsEstimate) "~" else ""}${formatBytes(totalBytes)}  •  ${formatRate(speed)}"
         else -> "${formatBytes(bytes)}  •  ${formatRate(speed)}"
     }
     Surface(color = Surface, shape = RoundedCornerShape(22.dp), border = androidx.compose.foundation.BorderStroke(1.dp, Violet.copy(.18f)), modifier = Modifier.fillMaxWidth()) {
@@ -608,7 +692,7 @@ private fun DownloadCard(record: DownloadRecord, progress: PlaybackProgress?, on
 }
 
 @Composable
-private fun SettingsScreen(viewModel: MainViewModel, chooseFolder: () -> Unit, modifier: Modifier = Modifier) {
+private fun SettingsScreen(viewModel: MainViewModel, chooseFolder: () -> Unit, chooseMediaFolder: () -> Unit, modifier: Modifier = Modifier) {
     var addSource by remember { mutableStateOf(false) }
     var languageExpanded by remember { mutableStateOf(false) }
     val prefs = viewModel.repository.preferences
@@ -617,6 +701,16 @@ private fun SettingsScreen(viewModel: MainViewModel, chooseFolder: () -> Unit, m
         item { SettingsLabel("DOWNLOADS") }
         item {
             SettingsCard(Icons.Outlined.Folder, "Download folder", prefs.downloadTreeUri?.let { Uri.parse(it).lastPathSegment } ?: "Not selected", Teal, chooseFolder)
+        }
+        item { SettingsLabel("PERSONAL LIBRARY") }
+        item {
+            SettingsCard(
+                Icons.Outlined.VideoLibrary,
+                "On-device anime folder",
+                prefs.localMediaTreeUri?.let { Uri.parse(it).lastPathSegment } ?: "Choose a folder containing your anime",
+                Violet,
+                chooseMediaFolder
+            )
         }
         item { SettingsLabel("DEFAULT AUDIO") }
         item {
@@ -628,6 +722,17 @@ private fun SettingsScreen(viewModel: MainViewModel, chooseFolder: () -> Unit, m
                     }
                 }
             }
+        }
+        item { SettingsLabel("PLAYBACK") }
+        item {
+            SettingsSwitchCard(
+                icon = Icons.Outlined.PlayCircle,
+                title = "Instant playback",
+                subtitle = if (viewModel.instantPlaybackEnabled) "On • choose Watch now or Download" else "Off • download before watching",
+                tint = Teal,
+                checked = viewModel.instantPlaybackEnabled,
+                onCheckedChange = viewModel::setInstantPlayback
+            )
         }
         item { SettingsLabel("CONTENT SOURCES") }
         item {
@@ -641,9 +746,9 @@ private fun SettingsScreen(viewModel: MainViewModel, chooseFolder: () -> Unit, m
                             Column(Modifier.padding(start = 12.dp).weight(1f)) {
                                 Row(verticalAlignment = Alignment.CenterVertically) {
                                     Text(source.name, fontWeight = FontWeight.Bold)
-                                    if (source.builtIn) LabelPill("BUILT-IN", Violet, Modifier.padding(start = 8.dp))
+                                    LabelPill(sourceKindLabel(source.kind), if (source.kind == SourceKind.ANILIST) Violet else Teal, Modifier.padding(start = 8.dp))
                                 }
-                                Text(source.baseUrl, color = Muted, fontSize = 10.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                Text(sourceDescription(source, prefs.localMediaTreeUri), color = Muted, fontSize = 10.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
                             }
                             if (!source.builtIn) {
                                 Switch(source.enabled, { viewModel.toggleSource(source.id) }, colors = SwitchDefaults.colors(checkedThumbColor = Ink, checkedTrackColor = Teal))
@@ -660,10 +765,10 @@ private fun SettingsScreen(viewModel: MainViewModel, chooseFolder: () -> Unit, m
                 onClick = { addSource = true }, shape = RoundedCornerShape(18.dp),
                 border = androidx.compose.foundation.BorderStroke(1.dp, Teal.copy(.5f)),
                 modifier = Modifier.fillMaxWidth().height(54.dp)
-            ) { Icon(Icons.Filled.Add, null); Text("ADD COMPATIBLE SOURCE", Modifier.padding(start = 8.dp), fontWeight = FontWeight.Black) }
+            ) { Icon(Icons.Filled.Add, null); Text("ADD A SOURCE", Modifier.padding(start = 8.dp), fontWeight = FontWeight.Black) }
         }
         item {
-            Text("Custom sources must expose the same catalog, episode, language, and HLS endpoints as the built-in provider. Kairo validates the catalog before saving it.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
+            Text("AniList enriches discovery but does not provide video. Jellyfin connects to a server you own. Compatible sources must expose Kairo's catalog and playback endpoints. Only add servers you trust and have permission to use.", color = Muted, fontSize = 11.sp, lineHeight = 16.sp)
         }
     }
     if (addSource) AddSourceDialog(viewModel, { addSource = false })
@@ -671,28 +776,72 @@ private fun SettingsScreen(viewModel: MainViewModel, chooseFolder: () -> Unit, m
 
 @Composable
 private fun AddSourceDialog(viewModel: MainViewModel, dismiss: () -> Unit) {
+    var kind by remember { mutableStateOf(SourceKind.JELLYFIN) }
     var name by remember { mutableStateOf("") }
     var url by remember { mutableStateOf("") }
+    var token by remember { mutableStateOf("") }
     AlertDialog(
         onDismissRequest = dismiss,
         containerColor = Surface,
         title = { Text("Add a content source", fontWeight = FontWeight.Black) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text("Use an AniDB-compatible server you trust.", color = Muted, fontSize = 12.sp)
+                Text("Connect a personal Jellyfin server or another Kairo-compatible endpoint.", color = Muted, fontSize = 12.sp)
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    FilterChip(
+                        selected = kind == SourceKind.JELLYFIN,
+                        onClick = { kind = SourceKind.JELLYFIN },
+                        label = { Text("Jellyfin") },
+                        leadingIcon = { Icon(Icons.Outlined.Dns, null, Modifier.size(16.dp)) },
+                        colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Teal, selectedLabelColor = Ink)
+                    )
+                    FilterChip(
+                        selected = kind == SourceKind.KAIRO_COMPATIBLE,
+                        onClick = { kind = SourceKind.KAIRO_COMPATIBLE },
+                        label = { Text("Compatible") },
+                        leadingIcon = { Icon(Icons.Outlined.Hub, null, Modifier.size(16.dp)) },
+                        colors = FilterChipDefaults.filterChipColors(selectedContainerColor = Violet, selectedLabelColor = Ink)
+                    )
+                }
                 OutlinedTextField(name, { name = it }, label = { Text("Source name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
-                OutlinedTextField(url, { url = it }, label = { Text("Base URL") }, placeholder = { Text("https://example.com") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(url, { url = it }, label = { Text(if (kind == SourceKind.JELLYFIN) "Server URL" else "Base URL") }, placeholder = { Text("https://example.com") }, singleLine = true, modifier = Modifier.fillMaxWidth())
+                if (kind == SourceKind.JELLYFIN) {
+                    OutlinedTextField(
+                        token, { token = it }, label = { Text("Access token / API key") },
+                        visualTransformation = PasswordVisualTransformation(), singleLine = true, modifier = Modifier.fillMaxWidth()
+                    )
+                    Text("Use HTTPS outside your home network. The token is stored only on this device.", color = Muted, fontSize = 10.sp)
+                }
                 viewModel.sourceValidation?.let { Text(it, color = if (it.startsWith("Checking")) Teal else Danger, fontSize = 11.sp) }
             }
         },
         confirmButton = {
             Button(
-                onClick = { viewModel.addSource(name, url) { if (it) dismiss() } },
-                enabled = name.isNotBlank() && url.startsWith("http"), colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = Ink)
+                onClick = {
+                    val done: (Boolean) -> Unit = { if (it) dismiss() }
+                    if (kind == SourceKind.JELLYFIN) viewModel.addJellyfinSource(name, url, token, done)
+                    else viewModel.addSource(name, url, done)
+                },
+                enabled = name.isNotBlank() && url.startsWith("http") && (kind != SourceKind.JELLYFIN || token.isNotBlank()),
+                colors = ButtonDefaults.buttonColors(containerColor = Teal, contentColor = Ink)
             ) { Text("VALIDATE & ADD", fontWeight = FontWeight.Black) }
         },
         dismissButton = { TextButton(dismiss) { Text("Cancel") } }
     )
+}
+
+private fun sourceKindLabel(kind: SourceKind): String = when (kind) {
+    SourceKind.KAIRO_COMPATIBLE -> "STREAM"
+    SourceKind.ANILIST -> "DISCOVERY"
+    SourceKind.JELLYFIN -> "JELLYFIN"
+    SourceKind.LOCAL -> "LOCAL"
+}
+
+private fun sourceDescription(source: SourceDefinition, localTreeUri: String?): String = when (source.kind) {
+    SourceKind.ANILIST -> "Rich metadata and discovery • find playback from another source"
+    SourceKind.JELLYFIN -> "${source.baseUrl} • your personal media server"
+    SourceKind.LOCAL -> localTreeUri?.let { "Folder: ${Uri.parse(it).lastPathSegment}" } ?: "Choose your anime folder above"
+    SourceKind.KAIRO_COMPATIBLE -> source.baseUrl
 }
 
 @Composable
@@ -705,6 +854,35 @@ private fun SettingsCard(icon: ImageVector, title: String, subtitle: String, tin
                 Text(subtitle, color = Muted, fontSize = 11.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
             }
             Icon(Icons.Filled.ChevronRight, null, tint = Muted)
+        }
+    }
+}
+
+@Composable
+private fun SettingsSwitchCard(
+    icon: ImageVector,
+    title: String,
+    subtitle: String,
+    tint: Color,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Surface(
+        onClick = { onCheckedChange(!checked) }, color = Surface, shape = RoundedCornerShape(22.dp),
+        border = androidx.compose.foundation.BorderStroke(1.dp, Color.White.copy(.06f))
+    ) {
+        Row(Modifier.fillMaxWidth().padding(15.dp), verticalAlignment = Alignment.CenterVertically) {
+            Box(Modifier.size(46.dp).clip(RoundedCornerShape(15.dp)).background(tint.copy(.15f)), contentAlignment = Alignment.Center) {
+                Icon(icon, null, tint = tint)
+            }
+            Column(Modifier.padding(start = 13.dp).weight(1f)) {
+                Text(title, fontWeight = FontWeight.Bold)
+                Text(subtitle, color = Muted, fontSize = 11.sp)
+            }
+            Switch(
+                checked = checked, onCheckedChange = onCheckedChange,
+                colors = SwitchDefaults.colors(checkedThumbColor = Ink, checkedTrackColor = Teal)
+            )
         }
     }
 }
@@ -768,13 +946,21 @@ private object MemoryImages {
 
 @Composable
 private fun RemoteImage(url: String, description: String, modifier: Modifier, scale: ContentScale) {
+    val context = LocalContext.current
     val bitmap by produceState<ImageBitmap?>(MemoryImages.images[url], url) {
         if (value == null && url.isNotBlank()) value = withContext(Dispatchers.IO) {
             runCatching {
-                val connection = URL(url).openConnection() as HttpURLConnection
-                connection.connectTimeout = 15_000; connection.readTimeout = 20_000
-                connection.setRequestProperty("User-Agent", app.kairo.anime.data.KairoRepository.USER_AGENT)
-                connection.inputStream.use { BitmapFactory.decodeStream(it)?.asImageBitmap() }
+                val decoded = if (url.startsWith("content://")) {
+                    context.contentResolver.openInputStream(Uri.parse(url))?.use(BitmapFactory::decodeStream)
+                } else {
+                    val connection = URL(url).openConnection() as HttpURLConnection
+                    connection.connectTimeout = 15_000; connection.readTimeout = 20_000
+                    connection.setRequestProperty("User-Agent", app.kairo.anime.data.KairoRepository.USER_AGENT)
+                    val repository = (context.applicationContext as app.kairo.anime.KairoApp).repository
+                    repository.imageHeaders(url).forEach(connection::setRequestProperty)
+                    connection.inputStream.use(BitmapFactory::decodeStream)
+                }
+                decoded?.asImageBitmap()
             }.getOrNull()?.also { MemoryImages.images[url] = it }
         }
     }
