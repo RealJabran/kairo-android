@@ -34,6 +34,17 @@ data class DownloadChoiceState(
     val error: String? = null
 )
 
+data class PlayRequest(
+    val uri: String,
+    val title: String,
+    val meta: String,
+    val referer: String = "",
+    val authToken: String = "",
+    val qualities: List<QualityOption> = emptyList(),
+    val selectedQualityLabel: String = "",
+    val navigation: PlaybackNavigation? = null
+)
+
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     val repository = (application as KairoApp).repository
 
@@ -57,7 +68,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var sourceValidation by mutableStateOf<String?>(null)
         private set
-
+    var playRequest by mutableStateOf<PlayRequest?>(null)
+        private set
+    var instantPlaybackEnabled by mutableStateOf(repository.preferences.instantPlaybackEnabled)
+        private set
     private var searchJob: Job? = null
 
     init {
@@ -113,9 +127,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val existing = completedDownloads.filter { recordMatchesEpisode(it, anime, episode) }
         downloadChoice = DownloadChoiceState(anime, episode, existingDownloads = existing)
         viewModelScope.launch {
-            runCatching { repository.languages(episode.id, repository.preferences.sources().firstOrNull { it.id == anime.sourceId } ?: repository.selectedSource()) }
+            runCatching { repository.languages(episode, repository.sourceFor(anime.sourceId)) }
                 .onSuccess { languages ->
-                    val preferred = languages.firstOrNull { it.label.equals(repository.preferences.defaultLanguage, true) } ?: languages.firstOrNull()
+                    val preferredLanguage = repository.preferences.defaultLanguage
+                    val preferred = languages.firstOrNull {
+                        it.label.equals(preferredLanguage, true) ||
+                            (preferredLanguage.startsWith("Hindi", true) && it.code.startsWith("hi", true))
+                    } ?: languages.firstOrNull()
                     downloadChoice = downloadChoice?.copy(loading = preferred != null, languages = languages, selectedLanguage = preferred)
                     if (preferred != null) loadQualities(preferred)
                     else downloadChoice = downloadChoice?.copy(loading = false, error = "No languages are available for this episode")
@@ -143,6 +161,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val choice = downloadChoice ?: return false
         val language = choice.selectedLanguage ?: return false
         val quality = choice.selectedQuality ?: return false
+        if (quality.delivery == DeliveryKind.LOCAL) {
+            downloadChoice = choice.copy(error = "This file is already stored on your device")
+            return false
+        }
         if (repository.preferences.downloadTreeUri == null) {
             downloadChoice = choice.copy(error = "Choose a download folder in Settings first")
             return false
@@ -151,6 +173,46 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         downloadChoice = null
         return true
     }
+
+    fun playSelected(): Boolean {
+        val choice = downloadChoice ?: return false
+        val quality = choice.selectedQuality ?: return false
+        if (quality.delivery != DeliveryKind.LOCAL && !instantPlaybackEnabled) {
+            downloadChoice = choice.copy(error = "Instant playback is off. Download the episode first or enable it in Settings.")
+            return false
+        }
+        val source = repository.sourceFor(choice.anime.sourceId)
+        val episodes = details?.takeIf {
+            it.anime.id == choice.anime.id && it.anime.sourceId == choice.anime.sourceId
+        }?.episodes.orEmpty().ifEmpty { listOf(choice.episode) }
+        val language = choice.selectedLanguage
+        playRequest = PlayRequest(
+            uri = quality.url,
+            title = "${choice.anime.title} • ${choice.episode.label}",
+            meta = "${language?.label.orEmpty()} • ${quality.label}",
+            referer = if (quality.delivery == DeliveryKind.HLS) source.baseUrl else "",
+            authToken = if (source.kind == SourceKind.JELLYFIN) source.authToken else "",
+            qualities = choice.qualities,
+            selectedQualityLabel = quality.label,
+            navigation = PlaybackNavigation(
+                animeId = choice.anime.id,
+                animeTitle = choice.anime.title,
+                animeUrl = choice.anime.url,
+                sourceId = choice.anime.sourceId,
+                languageCode = language?.code.orEmpty(),
+                languageName = language?.name.orEmpty(),
+                currentEpisodeId = choice.episode.id,
+                episodes = episodes.map {
+                    PlaybackEpisode(it.id, it.number, it.seasonNumber, it.title)
+                },
+                complete = details?.episodes?.isNotEmpty() == true
+            )
+        )
+        downloadChoice = null
+        return true
+    }
+
+    fun consumePlayRequest() { playRequest = null }
 
     fun dismissChoice() { downloadChoice = null }
 
@@ -181,14 +243,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val animeMatches = if (record.animeId.isNotBlank()) {
             record.animeId == anime.id && record.sourceId == anime.sourceId
         } else record.animeTitle.equals(anime.title, true)
-        val episodeMatches = if (record.episodeNumber > 0) record.episodeNumber == episode.number
-        else record.episodeLabel.equals("Episode ${episode.number}", true)
+        val episodeMatches = if (record.episodeId.isNotBlank()) record.episodeId == episode.id
+        else if (record.episodeNumber > 0) record.episodeNumber == episode.number && record.seasonNumber == episode.seasonNumber
+        else record.episodeLabel.equals(episode.label, true)
         return animeMatches && episodeMatches
     }
 
     fun selectSource(source: SourceDefinition) {
         repository.preferences.selectedSourceId = source.id
         refreshHome()
+    }
+
+    fun findPlayable(anime: Anime) {
+        val source = sources.firstOrNull { it.enabled && it.kind == SourceKind.KAIRO_COMPATIBLE }
+            ?: sources.firstOrNull { it.enabled && it.kind == SourceKind.JELLYFIN }
+            ?: sources.firstOrNull {
+                it.enabled && it.kind == SourceKind.STREMIO && it.addonResources.split(',').contains("catalog")
+            }
+            ?: return
+        repository.preferences.selectedSourceId = source.id
+        details = null
+        home = home.copy(query = anime.title)
+        search(anime.title)
     }
 
     fun addSource(name: String, url: String, done: (Boolean) -> Unit) {
@@ -204,6 +280,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun addJellyfinSource(name: String, url: String, token: String, done: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            sourceValidation = "Connecting securely to Jellyfin…"
+            runCatching { repository.validateJellyfin(url, token) }
+                .onSuccess { connection ->
+                    repository.preferences.addJellyfinSource(name.ifBlank { connection.serverName }, url, token, connection.userId)
+                    sources = repository.preferences.sources()
+                    sourceValidation = null
+                    done(true)
+                }
+                .onFailure { error ->
+                    sourceValidation = error.message ?: "Could not connect to this Jellyfin server"
+                    done(false)
+                }
+        }
+    }
+
+    fun addStremioSource(url: String, done: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            sourceValidation = "Reading add-on manifest…"
+            runCatching { repository.validateStremioAddon(url) }
+                .onSuccess { addon ->
+                    repository.preferences.addStremioSource(
+                        name = addon.name,
+                        manifestUrl = addon.manifestUrl,
+                        addonId = addon.id,
+                        addonVersion = addon.version,
+                        description = addon.description,
+                        resources = addon.resources,
+                        p2p = addon.p2p
+                    )
+                    sources = repository.preferences.sources()
+                    sourceValidation = null
+                    done(true)
+                }
+                .onFailure { error ->
+                    sourceValidation = error.message ?: "Could not read this Stremio add-on"
+                    done(false)
+                }
+        }
+    }
+
+    fun localFolderChanged(uri: String) {
+        repository.preferences.localMediaTreeUri = uri
+        sources = repository.preferences.sources()
+        if (repository.preferences.selectedSourceId == "local") refreshHome()
+    }
+
+    fun setInstantPlayback(enabled: Boolean) {
+        repository.preferences.instantPlaybackEnabled = enabled
+        instantPlaybackEnabled = enabled
+    }
+
     fun removeSource(id: String) { repository.preferences.removeSource(id); sources = repository.preferences.sources(); refreshHome() }
     fun toggleSource(id: String) { repository.preferences.toggleSource(id); sources = repository.preferences.sources() }
+    fun moveSource(id: String, direction: Int) { repository.preferences.moveSource(id, direction); sources = repository.preferences.sources() }
 }

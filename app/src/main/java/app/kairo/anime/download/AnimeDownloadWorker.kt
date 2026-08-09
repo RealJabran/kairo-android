@@ -14,12 +14,14 @@ import androidx.work.WorkerParameters
 import androidx.work.workDataOf
 import app.kairo.anime.R
 import app.kairo.anime.data.DownloadRecord
+import app.kairo.anime.data.DeliveryKind
 import app.kairo.anime.data.KairoPreferences
 import app.kairo.anime.data.KairoRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
 import java.io.InputStream
+import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
 import java.security.MessageDigest
@@ -38,46 +40,27 @@ class AnimeDownloadWorker(context: Context, parameters: WorkerParameters) : Coro
         val playlistUrl = inputData.getString("playlistUrl") ?: return@withContext Result.failure()
         val sourceBase = inputData.getString("sourceBase") ?: playlistUrl
         val estimatedBytes = inputData.getLong("estimatedBytes", 0)
+        val delivery = runCatching { DeliveryKind.valueOf(inputData.getString("delivery") ?: DeliveryKind.HLS.name) }.getOrDefault(DeliveryKind.HLS)
+        val container = sanitize(inputData.getString("container").orEmpty().ifBlank { "mp4" }).lowercase()
+        val authToken = inputData.getString("authToken").orEmpty()
         val tree = preferences.downloadTreeUri?.let(Uri::parse) ?: return@withContext Result.failure(workDataOf("error" to "Choose a download folder in Settings"))
 
         setForeground(foregroundInfo(animeTitle, episodeLabel, 0))
-        setProgress(progressData(animeTitle, episodeLabel, 0, 0, estimatedBytes, 0))
+        setProgress(progressData(animeTitle, episodeLabel, 0, 0, estimatedBytes, 0, delivery == DeliveryKind.HLS))
 
         var partialUri: Uri? = null
         runCatching {
             val root = DocumentFile.fromTreeUri(applicationContext, tree) ?: error("Download folder is unavailable")
             val animeDir = root.findFile(sanitize(animeTitle)) ?: root.createDirectory(sanitize(animeTitle)) ?: error("Cannot create anime folder")
-            val outputName = "${sanitize(episodeLabel)} • ${sanitize(language)} • ${sanitize(quality)}.mp4"
+            val outputName = "${sanitize(episodeLabel)} • ${sanitize(language)} • ${sanitize(quality)}.$container"
             animeDir.findFile(outputName)?.delete()
-            val output = animeDir.createFile("video/mp4", outputName) ?: error("Cannot create output file")
+            val output = animeDir.createFile(videoMime(container), outputName) ?: error("Cannot create output file")
             partialUri = output.uri
-
-            var mediaUrl = playlistUrl
-            var playlist = getText(mediaUrl, sourceBase)
-            if (playlist.contains("#EXT-X-STREAM-INF")) {
-                val variants = parseVariants(playlist, mediaUrl)
-                mediaUrl = variants.lastOrNull() ?: error("No HLS variant found")
-                playlist = getText(mediaUrl, sourceBase)
-            }
-            val parsed = parseMediaPlaylist(playlist, mediaUrl)
-            if (parsed.segments.isEmpty()) error("The stream contains no video segments")
-
-            var written = 0L
-            val startedAt = SystemClock.elapsedRealtime()
-            applicationContext.contentResolver.openOutputStream(output.uri, "w")!!.use { destination ->
-                parsed.initSegment?.let { initUrl ->
-                    open(initUrl, sourceBase).use { it.copyTo(destination).also { count -> written += count } }
-                }
-                parsed.segments.forEachIndexed { index, segment ->
-                    if (isStopped) error("Download cancelled")
-                    val bytes = open(segment.url, sourceBase).use(InputStream::readBytes)
-                    val decoded = segment.key?.let { decrypt(bytes, it, parsed.mediaSequence + index, sourceBase) } ?: bytes
-                    ByteArrayInputStream(decoded).use { input -> written += input.copyTo(destination) }
-                    val percent = ((index + 1) * 100 / parsed.segments.size).coerceIn(0, 100)
-                    val elapsedMs = (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(1)
-                    val speed = written * 1_000L / elapsedMs
-                    setProgress(progressData(animeTitle, episodeLabel, percent, written, estimatedBytes, speed))
-                    setForeground(foregroundInfo(animeTitle, episodeLabel, percent))
+            val written = applicationContext.contentResolver.openOutputStream(output.uri, "w")!!.use { destination ->
+                when (delivery) {
+                    DeliveryKind.DIRECT -> downloadDirect(playlistUrl, sourceBase, authToken, destination, animeTitle, episodeLabel, estimatedBytes)
+                    DeliveryKind.HLS -> downloadHls(playlistUrl, sourceBase, destination, animeTitle, episodeLabel, estimatedBytes)
+                    DeliveryKind.LOCAL -> error("Local files do not need to be downloaded")
                 }
             }
             preferences.addDownload(DownloadRecord(
@@ -88,7 +71,9 @@ class AnimeDownloadWorker(context: Context, parameters: WorkerParameters) : Coro
                 animeImageUrl = inputData.getString("animeImageUrl").orEmpty(),
                 animeUrl = inputData.getString("animeUrl").orEmpty(),
                 sourceId = inputData.getString("sourceId") ?: "anidb",
-                episodeNumber = inputData.getInt("episodeNumber", 0)
+                episodeNumber = inputData.getInt("episodeNumber", 0),
+                episodeId = inputData.getString("episodeId").orEmpty(),
+                seasonNumber = inputData.getInt("seasonNumber", 0)
             ))
             partialUri = null
             Result.success(workDataOf("uri" to output.uri.toString()))
@@ -116,7 +101,8 @@ class AnimeDownloadWorker(context: Context, parameters: WorkerParameters) : Coro
         progress: Int,
         bytes: Long,
         totalBytes: Long,
-        bytesPerSecond: Long
+        bytesPerSecond: Long,
+        totalIsEstimate: Boolean
     ) = workDataOf(
         "progress" to progress,
         "title" to "$anime • $episode",
@@ -124,8 +110,78 @@ class AnimeDownloadWorker(context: Context, parameters: WorkerParameters) : Coro
         "episodeLabel" to episode,
         "bytes" to bytes,
         "totalBytes" to totalBytes,
-        "bytesPerSecond" to bytesPerSecond
+        "bytesPerSecond" to bytesPerSecond,
+        "totalIsEstimate" to totalIsEstimate
     )
+
+    private suspend fun downloadDirect(
+        url: String,
+        referer: String,
+        authToken: String,
+        destination: OutputStream,
+        anime: String,
+        episode: String,
+        estimate: Long
+    ): Long {
+        val connection = connection(url, referer, authToken)
+        val total = connection.contentLengthLong.takeIf { it > 0 } ?: estimate
+        var written = 0L
+        val startedAt = SystemClock.elapsedRealtime()
+        var lastUpdate = 0L
+        connection.inputStream.use { input ->
+            val buffer = ByteArray(128 * 1024)
+            while (true) {
+                if (isStopped) error("Download cancelled")
+                val count = input.read(buffer)
+                if (count < 0) break
+                destination.write(buffer, 0, count)
+                written += count
+                val now = SystemClock.elapsedRealtime()
+                if (now - lastUpdate >= 500) {
+                    val speed = written * 1_000L / (now - startedAt).coerceAtLeast(1)
+                    val percent = if (total > 0) ((written * 100L) / total).toInt().coerceIn(0, 99) else 0
+                    setProgress(progressData(anime, episode, percent, written, total, speed, false))
+                    setForeground(foregroundInfo(anime, episode, percent))
+                    lastUpdate = now
+                }
+            }
+        }
+        val speed = written * 1_000L / (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(1)
+        setProgress(progressData(anime, episode, 100, written, written, speed, false))
+        return written
+    }
+
+    private suspend fun downloadHls(
+        playlistUrl: String,
+        sourceBase: String,
+        destination: OutputStream,
+        anime: String,
+        episode: String,
+        estimate: Long
+    ): Long {
+        var mediaUrl = playlistUrl
+        var playlist = getText(mediaUrl, sourceBase)
+        if (playlist.contains("#EXT-X-STREAM-INF")) {
+            mediaUrl = parseVariants(playlist, mediaUrl).lastOrNull() ?: error("No HLS variant found")
+            playlist = getText(mediaUrl, sourceBase)
+        }
+        val parsed = parseMediaPlaylist(playlist, mediaUrl)
+        if (parsed.segments.isEmpty()) error("The stream contains no video segments")
+        var written = 0L
+        val startedAt = SystemClock.elapsedRealtime()
+        parsed.initSegment?.let { initUrl -> open(initUrl, sourceBase).use { written += it.copyTo(destination) } }
+        parsed.segments.forEachIndexed { index, segment ->
+            if (isStopped) error("Download cancelled")
+            val bytes = open(segment.url, sourceBase).use(InputStream::readBytes)
+            val decoded = segment.key?.let { decrypt(bytes, it, parsed.mediaSequence + index, sourceBase) } ?: bytes
+            ByteArrayInputStream(decoded).use { written += it.copyTo(destination) }
+            val percent = ((index + 1) * 100 / parsed.segments.size).coerceIn(0, 100)
+            val speed = written * 1_000L / (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(1)
+            setProgress(progressData(anime, episode, percent, written, estimate, speed, true))
+            setForeground(foregroundInfo(anime, episode, percent))
+        }
+        return written
+    }
 
     private data class Encryption(val keyUrl: String, val iv: ByteArray?)
     private data class Segment(val url: String, val key: Encryption?)
@@ -181,11 +237,23 @@ class AnimeDownloadWorker(context: Context, parameters: WorkerParameters) : Coro
     private fun getText(url: String, referer: String): String = open(url, referer).bufferedReader().use { it.readText() }
 
     private fun open(url: String, referer: String): InputStream {
-        val connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 30_000; connection.readTimeout = 30_000; connection.instanceFollowRedirects = true
-        connection.setRequestProperty("User-Agent", KairoRepository.USER_AGENT)
-        connection.setRequestProperty("Referer", referer)
-        return connection.inputStream
+        return connection(url, referer, "").inputStream
+    }
+
+    private fun connection(url: String, referer: String, authToken: String): HttpURLConnection =
+        (URL(url).openConnection() as HttpURLConnection).apply {
+            connectTimeout = 30_000; readTimeout = 30_000; instanceFollowRedirects = true
+            setRequestProperty("User-Agent", KairoRepository.USER_AGENT)
+            setRequestProperty("Referer", referer)
+            if (authToken.isNotBlank()) setRequestProperty("X-Emby-Token", authToken)
+        }
+
+    private fun videoMime(container: String): String = when (container) {
+        "mkv" -> "video/x-matroska"
+        "webm" -> "video/webm"
+        "ts", "m2ts" -> "video/mp2t"
+        "avi" -> "video/x-msvideo"
+        else -> "video/mp4"
     }
 
     private fun sanitize(value: String): String = value.replace(Regex("[\\\\/:*?\"<>|]"), " ").replace(Regex("\\s+"), " ").trim().take(100)

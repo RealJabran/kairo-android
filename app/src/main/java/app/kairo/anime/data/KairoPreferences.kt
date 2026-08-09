@@ -9,6 +9,15 @@ import java.util.UUID
 class KairoPreferences(context: Context) {
     private val prefs = context.getSharedPreferences("kairo_preferences", Context.MODE_PRIVATE)
 
+    init {
+        if (listOf("opensubtitles_api_key", "opensubtitles_token", "opensubtitles_base_url", "subtitle_language", "auto_download_captions").any(prefs::contains)) {
+            prefs.edit()
+                .remove("opensubtitles_api_key").remove("opensubtitles_token").remove("opensubtitles_base_url")
+                .remove("subtitle_language").remove("auto_download_captions")
+                .apply()
+        }
+    }
+
     var downloadTreeUri: String?
         get() = prefs.getString("download_tree", null)
         set(value) { prefs.edit().putString("download_tree", value).apply() }
@@ -21,11 +30,23 @@ class KairoPreferences(context: Context) {
         get() = prefs.getString("selected_source", "anidb") ?: "anidb"
         set(value) { prefs.edit().putString("selected_source", value).apply() }
 
+    var localMediaTreeUri: String?
+        get() = prefs.getString("local_media_tree", null)
+        set(value) { prefs.edit().putString("local_media_tree", value).apply() }
+
+    var instantPlaybackEnabled: Boolean
+        get() = prefs.getBoolean("instant_playback", false)
+        set(value) { prefs.edit().putBoolean("instant_playback", value).apply() }
+
     fun sources(): List<SourceDefinition> {
-        val builtIn = SourceDefinition("anidb", "AniDB", "https://anidb.app", true, true)
+        val builtIns = listOf(
+            SourceDefinition("anidb", "Kairo Stream", "https://anidb.app", true, true, SourceKind.KAIRO_COMPATIBLE),
+            SourceDefinition("anilist", "AniList", "https://graphql.anilist.co", true, true, SourceKind.ANILIST),
+            SourceDefinition("local", "On device", "content://local", true, true, SourceKind.LOCAL)
+        )
         val raw = prefs.getString("sources", "[]") ?: "[]"
         return buildList {
-            add(builtIn)
+            addAll(builtIns)
             runCatching {
                 val array = JSONArray(raw)
                 repeat(array.length()) { index ->
@@ -34,7 +55,15 @@ class KairoPreferences(context: Context) {
                         id = item.getString("id"),
                         name = item.getString("name"),
                         baseUrl = item.getString("baseUrl").trimEnd('/'),
-                        enabled = item.optBoolean("enabled", true)
+                        enabled = item.optBoolean("enabled", true),
+                        kind = runCatching { SourceKind.valueOf(item.optString("kind", SourceKind.KAIRO_COMPATIBLE.name)) }.getOrDefault(SourceKind.KAIRO_COMPATIBLE),
+                        authToken = item.optString("authToken"),
+                        userId = item.optString("userId"),
+                        addonId = item.optString("addonId"),
+                        addonVersion = item.optString("addonVersion"),
+                        addonDescription = item.optString("addonDescription"),
+                        addonResources = item.optString("addonResources"),
+                        addonP2p = item.optBoolean("addonP2p")
                     ))
                 }
             }
@@ -47,6 +76,45 @@ class KairoPreferences(context: Context) {
         return source
     }
 
+    fun addJellyfinSource(name: String, baseUrl: String, authToken: String, userId: String): SourceDefinition {
+        val source = SourceDefinition(
+            id = UUID.randomUUID().toString(), name = name.trim(), baseUrl = baseUrl.trim().trimEnd('/'),
+            kind = SourceKind.JELLYFIN, authToken = authToken.trim(), userId = userId
+        )
+        saveSources(sources().filterNot { it.builtIn } + source)
+        return source
+    }
+
+    fun addStremioSource(
+        name: String,
+        manifestUrl: String,
+        addonId: String,
+        addonVersion: String,
+        description: String,
+        resources: Set<String>,
+        p2p: Boolean
+    ): SourceDefinition {
+        val current = sources().filterNot { it.builtIn }
+        val duplicate = current.firstOrNull {
+            it.kind == SourceKind.STREMIO &&
+                (it.baseUrl.equals(manifestUrl, true) || addonId.isNotBlank() && it.addonId == addonId)
+        }
+        val source = SourceDefinition(
+            id = duplicate?.id ?: UUID.randomUUID().toString(),
+            name = name.trim(),
+            baseUrl = manifestUrl.trim(),
+            enabled = true,
+            kind = SourceKind.STREMIO,
+            addonId = addonId,
+            addonVersion = addonVersion,
+            addonDescription = description,
+            addonResources = resources.sorted().joinToString(","),
+            addonP2p = p2p
+        )
+        saveSources(current.filterNot { it.id == duplicate?.id } + source)
+        return source
+    }
+
     fun removeSource(id: String) {
         saveSources(sources().filterNot { it.builtIn || it.id == id })
         if (selectedSourceId == id) selectedSourceId = "anidb"
@@ -54,6 +122,18 @@ class KairoPreferences(context: Context) {
 
     fun toggleSource(id: String) {
         saveSources(sources().filterNot { it.builtIn }.map { if (it.id == id) it.copy(enabled = !it.enabled) else it })
+    }
+
+    fun moveSource(id: String, direction: Int) {
+        if (direction == 0) return
+        val custom = sources().filterNot { it.builtIn }.toMutableList()
+        val from = custom.indexOfFirst { it.id == id }
+        if (from < 0) return
+        val to = (from + direction).coerceIn(0, custom.lastIndex)
+        if (from == to) return
+        val moved = custom.removeAt(from)
+        custom.add(to, moved)
+        saveSources(custom)
     }
 
     private fun saveSources(items: List<SourceDefinition>) {
@@ -64,6 +144,14 @@ class KairoPreferences(context: Context) {
                 put("name", source.name)
                 put("baseUrl", source.baseUrl)
                 put("enabled", source.enabled)
+                put("kind", source.kind.name)
+                put("authToken", source.authToken)
+                put("userId", source.userId)
+                put("addonId", source.addonId)
+                put("addonVersion", source.addonVersion)
+                put("addonDescription", source.addonDescription)
+                put("addonResources", source.addonResources)
+                put("addonP2p", source.addonP2p)
             })
         }
         prefs.edit().putString("sources", array.toString()).apply()
@@ -82,7 +170,8 @@ class KairoPreferences(context: Context) {
                     bytes = item.optLong("bytes"), completedAt = item.optLong("completedAt"),
                     animeId = item.optString("animeId"), animeImageUrl = item.optString("animeImageUrl"),
                     animeUrl = item.optString("animeUrl"), sourceId = item.optString("sourceId", "anidb"),
-                    episodeNumber = item.optInt("episodeNumber")
+                    episodeNumber = item.optInt("episodeNumber"), episodeId = item.optString("episodeId"),
+                    seasonNumber = item.optInt("seasonNumber"), subtitleUri = item.optString("subtitleUri")
                 )
             }.sortedByDescending { it.completedAt }
         }.getOrDefault(emptyList())
@@ -105,6 +194,8 @@ class KairoPreferences(context: Context) {
                 put("bytes", item.bytes); put("completedAt", item.completedAt)
                 put("animeId", item.animeId); put("animeImageUrl", item.animeImageUrl); put("animeUrl", item.animeUrl)
                 put("sourceId", item.sourceId); put("episodeNumber", item.episodeNumber)
+                put("episodeId", item.episodeId); put("seasonNumber", item.seasonNumber)
+                put("subtitleUri", item.subtitleUri)
             })
         }
         prefs.edit().putString("downloads", array.toString()).commit()
@@ -120,6 +211,8 @@ class KairoPreferences(context: Context) {
                 put("bytes", item.bytes); put("completedAt", item.completedAt)
                 put("animeId", item.animeId); put("animeImageUrl", item.animeImageUrl); put("animeUrl", item.animeUrl)
                 put("sourceId", item.sourceId); put("episodeNumber", item.episodeNumber)
+                put("episodeId", item.episodeId); put("seasonNumber", item.seasonNumber)
+                put("subtitleUri", item.subtitleUri)
             })
         }
         prefs.edit().putString("downloads", array.toString()).apply()
