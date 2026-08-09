@@ -9,7 +9,6 @@ import androidx.lifecycle.viewModelScope
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import app.kairo.anime.data.*
-import app.kairo.anime.data.captions.OpenSubtitlesClient
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -40,7 +39,10 @@ data class PlayRequest(
     val title: String,
     val meta: String,
     val referer: String = "",
-    val authToken: String = ""
+    val authToken: String = "",
+    val qualities: List<QualityOption> = emptyList(),
+    val selectedQualityLabel: String = "",
+    val navigation: PlaybackNavigation? = null
 )
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
@@ -70,15 +72,6 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         private set
     var instantPlaybackEnabled by mutableStateOf(repository.preferences.instantPlaybackEnabled)
         private set
-    var openSubtitlesConnected by mutableStateOf(repository.preferences.openSubtitlesConnected)
-        private set
-    var autoDownloadCaptions by mutableStateOf(repository.preferences.autoDownloadCaptions)
-        private set
-    var subtitleLanguage by mutableStateOf(repository.preferences.subtitleLanguage)
-        private set
-    var captionValidation by mutableStateOf<String?>(null)
-        private set
-
     private var searchJob: Job? = null
 
     init {
@@ -136,7 +129,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             runCatching { repository.languages(episode, repository.sourceFor(anime.sourceId)) }
                 .onSuccess { languages ->
-                    val preferred = languages.firstOrNull { it.label.equals(repository.preferences.defaultLanguage, true) } ?: languages.firstOrNull()
+                    val preferredLanguage = repository.preferences.defaultLanguage
+                    val preferred = languages.firstOrNull {
+                        it.label.equals(preferredLanguage, true) ||
+                            (preferredLanguage.startsWith("Hindi", true) && it.code.startsWith("hi", true))
+                    } ?: languages.firstOrNull()
                     downloadChoice = downloadChoice?.copy(loading = preferred != null, languages = languages, selectedLanguage = preferred)
                     if (preferred != null) loadQualities(preferred)
                     else downloadChoice = downloadChoice?.copy(loading = false, error = "No languages are available for this episode")
@@ -185,12 +182,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return false
         }
         val source = repository.sourceFor(choice.anime.sourceId)
+        val episodes = details?.takeIf {
+            it.anime.id == choice.anime.id && it.anime.sourceId == choice.anime.sourceId
+        }?.episodes.orEmpty().ifEmpty { listOf(choice.episode) }
+        val language = choice.selectedLanguage
         playRequest = PlayRequest(
             uri = quality.url,
             title = "${choice.anime.title} • ${choice.episode.label}",
-            meta = "${choice.selectedLanguage?.label.orEmpty()} • ${quality.label}",
+            meta = "${language?.label.orEmpty()} • ${quality.label}",
             referer = if (quality.delivery == DeliveryKind.HLS) source.baseUrl else "",
-            authToken = if (source.kind == SourceKind.JELLYFIN) source.authToken else ""
+            authToken = if (source.kind == SourceKind.JELLYFIN) source.authToken else "",
+            qualities = choice.qualities,
+            selectedQualityLabel = quality.label,
+            navigation = PlaybackNavigation(
+                animeId = choice.anime.id,
+                animeTitle = choice.anime.title,
+                animeUrl = choice.anime.url,
+                sourceId = choice.anime.sourceId,
+                languageCode = language?.code.orEmpty(),
+                languageName = language?.name.orEmpty(),
+                currentEpisodeId = choice.episode.id,
+                episodes = episodes.map {
+                    PlaybackEpisode(it.id, it.number, it.seasonNumber, it.title)
+                },
+                complete = details?.episodes?.isNotEmpty() == true
+            )
         )
         downloadChoice = null
         return true
@@ -241,6 +257,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun findPlayable(anime: Anime) {
         val source = sources.firstOrNull { it.enabled && it.kind == SourceKind.KAIRO_COMPATIBLE }
             ?: sources.firstOrNull { it.enabled && it.kind == SourceKind.JELLYFIN }
+            ?: sources.firstOrNull {
+                it.enabled && it.kind == SourceKind.STREMIO && it.addonResources.split(',').contains("catalog")
+            }
             ?: return
         repository.preferences.selectedSourceId = source.id
         details = null
@@ -278,6 +297,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    fun addStremioSource(url: String, done: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            sourceValidation = "Reading add-on manifest…"
+            runCatching { repository.validateStremioAddon(url) }
+                .onSuccess { addon ->
+                    repository.preferences.addStremioSource(
+                        name = addon.name,
+                        manifestUrl = addon.manifestUrl,
+                        addonId = addon.id,
+                        addonVersion = addon.version,
+                        description = addon.description,
+                        resources = addon.resources,
+                        p2p = addon.p2p
+                    )
+                    sources = repository.preferences.sources()
+                    sourceValidation = null
+                    done(true)
+                }
+                .onFailure { error ->
+                    sourceValidation = error.message ?: "Could not read this Stremio add-on"
+                    done(false)
+                }
+        }
+    }
+
     fun localFolderChanged(uri: String) {
         repository.preferences.localMediaTreeUri = uri
         sources = repository.preferences.sources()
@@ -289,46 +333,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         instantPlaybackEnabled = enabled
     }
 
-    fun connectOpenSubtitles(
-        apiKey: String,
-        username: String,
-        password: String,
-        language: String,
-        done: (Boolean) -> Unit
-    ) {
-        viewModelScope.launch {
-            captionValidation = "Connecting to OpenSubtitles…"
-            runCatching { OpenSubtitlesClient(getApplication()).login(apiKey, username, password) }
-                .onSuccess { session ->
-                    repository.preferences.openSubtitlesApiKey = apiKey.trim()
-                    repository.preferences.openSubtitlesToken = session.token
-                    repository.preferences.openSubtitlesBaseUrl = session.baseUrl
-                    repository.preferences.subtitleLanguage = language
-                    openSubtitlesConnected = true
-                    subtitleLanguage = language
-                    captionValidation = null
-                    done(true)
-                }
-                .onFailure { error ->
-                    captionValidation = error.message ?: "Could not connect to OpenSubtitles"
-                    done(false)
-                }
-        }
-    }
-
-    fun disconnectOpenSubtitles() {
-        repository.preferences.disconnectOpenSubtitles()
-        openSubtitlesConnected = false
-        autoDownloadCaptions = false
-        captionValidation = null
-    }
-
-    fun updateAutoDownloadCaptions(enabled: Boolean) {
-        if (!openSubtitlesConnected) return
-        repository.preferences.autoDownloadCaptions = enabled
-        autoDownloadCaptions = enabled
-    }
-
     fun removeSource(id: String) { repository.preferences.removeSource(id); sources = repository.preferences.sources(); refreshHome() }
     fun toggleSource(id: String) { repository.preferences.toggleSource(id); sources = repository.preferences.sources() }
+    fun moveSource(id: String, direction: Int) { repository.preferences.moveSource(id, direction); sources = repository.preferences.sources() }
 }

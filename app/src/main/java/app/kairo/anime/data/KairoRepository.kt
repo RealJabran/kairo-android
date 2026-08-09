@@ -17,8 +17,10 @@ class KairoRepository(private val context: Context) {
 
     private val compatibleAdapter = KairoCompatibleAdapter()
     private val jellyfinAdapter = JellyfinAdapter()
+    private val stremioAdapter = StremioAddonAdapter(preferences)
     private val adapters: Map<SourceKind, AnimeSourceAdapter> = listOf(
         compatibleAdapter,
+        stremioAdapter,
         AniListAdapter(),
         jellyfinAdapter,
         LocalFolderAdapter(context, preferences)
@@ -57,6 +59,10 @@ class KairoRepository(private val context: Context) {
 
     suspend fun validateJellyfin(baseUrl: String, token: String): JellyfinConnection = withContext(Dispatchers.IO) {
         jellyfinAdapter.validate(baseUrl, token)
+    }
+
+    suspend fun validateStremioAddon(url: String): StremioConnection = withContext(Dispatchers.IO) {
+        stremioAdapter.validate(url)
     }
 
     fun sourceFor(id: String): SourceDefinition = preferences.sources().firstOrNull { it.id == id } ?: selectedSource()
@@ -108,7 +114,7 @@ class KairoRepository(private val context: Context) {
         adapters[source.kind] ?: error("Unsupported source type: ${source.kind}")
 
     companion object {
-        const val USER_AGENT = "Mozilla/5.0 (Android 14; Mobile) AppleWebKit/537.36 Kairo/1.4"
+        const val USER_AGENT = "Mozilla/5.0 (Android 14; Mobile) AppleWebKit/537.36 Kairo/2.1.1"
 
         fun resolveUrl(value: String, base: String): String {
             if (value.startsWith("http://") || value.startsWith("https://")) return value

@@ -17,7 +17,6 @@ import app.kairo.anime.data.DownloadRecord
 import app.kairo.anime.data.DeliveryKind
 import app.kairo.anime.data.KairoPreferences
 import app.kairo.anime.data.KairoRepository
-import app.kairo.anime.data.captions.OpenSubtitlesClient
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.ByteArrayInputStream
@@ -64,24 +63,6 @@ class AnimeDownloadWorker(context: Context, parameters: WorkerParameters) : Coro
                     DeliveryKind.LOCAL -> error("Local files do not need to be downloaded")
                 }
             }
-            var subtitleUri = ""
-            if (preferences.autoDownloadCaptions && preferences.openSubtitlesConnected) {
-                runCatching {
-                    val match = OpenSubtitlesClient(applicationContext).downloadBest(
-                        title = animeTitle,
-                        seasonNumber = inputData.getInt("seasonNumber", 0),
-                        episodeNumber = inputData.getInt("episodeNumber", 0),
-                        language = preferences.subtitleLanguage
-                    )
-                    if (match != null) {
-                        val captionName = outputName.substringBeforeLast('.') + " • ${sanitize(preferences.subtitleLanguage)}.srt"
-                        animeDir.findFile(captionName)?.delete()
-                        val caption = animeDir.createFile("application/x-subrip", captionName) ?: error("Cannot create caption file")
-                        applicationContext.contentResolver.openOutputStream(caption.uri, "w")!!.use { it.write(match.second) }
-                        subtitleUri = caption.uri.toString()
-                    }
-                }
-            }
             preferences.addDownload(DownloadRecord(
                 id = id.toString(), animeTitle = animeTitle, episodeLabel = episodeLabel,
                 language = language, quality = quality, uri = output.uri.toString(),
@@ -92,8 +73,7 @@ class AnimeDownloadWorker(context: Context, parameters: WorkerParameters) : Coro
                 sourceId = inputData.getString("sourceId") ?: "anidb",
                 episodeNumber = inputData.getInt("episodeNumber", 0),
                 episodeId = inputData.getString("episodeId").orEmpty(),
-                seasonNumber = inputData.getInt("seasonNumber", 0),
-                subtitleUri = subtitleUri
+                seasonNumber = inputData.getInt("seasonNumber", 0)
             ))
             partialUri = null
             Result.success(workDataOf("uri" to output.uri.toString()))

@@ -10,22 +10,27 @@ internal object SourceHttp {
     fun document(url: String, referer: String): Document = Jsoup.connect(url)
         .userAgent(KairoRepository.USER_AGENT).referrer(referer).timeout(30_000).followRedirects(true).get()
 
-    fun get(url: String, referer: String = url, headers: Map<String, String> = emptyMap()): String =
-        request(url, "GET", referer, headers, null)
+    fun get(
+        url: String,
+        referer: String = url,
+        headers: Map<String, String> = emptyMap(),
+        timeoutMs: Int = 30_000
+    ): String = request(url, "GET", referer, headers, null, timeoutMs)
 
     fun postJson(url: String, body: String, headers: Map<String, String> = emptyMap()): String =
-        request(url, "POST", url, headers + ("Content-Type" to "application/json"), body)
+        request(url, "POST", url, headers + ("Content-Type" to "application/json"), body, 30_000)
 
     private fun request(
         url: String,
         method: String,
         referer: String,
         headers: Map<String, String>,
-        body: String?
+        body: String?,
+        timeoutMs: Int
     ): String {
         val connection = URL(url).openConnection() as HttpURLConnection
-        connection.connectTimeout = 30_000
-        connection.readTimeout = 30_000
+        connection.connectTimeout = timeoutMs
+        connection.readTimeout = timeoutMs
         connection.instanceFollowRedirects = true
         connection.requestMethod = method
         connection.setRequestProperty("User-Agent", KairoRepository.USER_AGENT)

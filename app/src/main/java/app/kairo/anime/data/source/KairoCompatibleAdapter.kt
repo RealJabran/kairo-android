@@ -59,10 +59,12 @@ class KairoCompatibleAdapter : AnimeSourceAdapter {
         val absoluteStream = KairoRepository.resolveUrl(streamUrl.replace("\\/", "/"), language.embedUrl)
         val playlist = SourceHttp.get(absoluteStream, source.baseUrl)
         val variants = parseMasterPlaylist(playlist, absoluteStream)
-        return if (variants.isEmpty()) listOf(QualityOption("Auto", absoluteStream)) else variants.map { variant ->
+        if (variants.isEmpty()) return listOf(QualityOption("Auto", absoluteStream))
+        val fixed = variants.map { variant ->
             val mediaPlaylist = runCatching { SourceHttp.get(variant.url, source.baseUrl) }.getOrDefault("")
             QualityOption(variant.label, variant.url, estimateSize(mediaPlaylist, variant.bandwidth), variant.bandwidth)
         }.sortedBy { it.label.filter(Char::isDigit).toIntOrNull() ?: Int.MAX_VALUE }
+        return listOf(QualityOption("Auto", absoluteStream)) + fixed
     }
 
     fun validate(baseUrl: String): Boolean = runCatching {

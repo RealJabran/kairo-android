@@ -48,7 +48,30 @@ data class QualityOption(
     val container: String = "mp4"
 )
 
-enum class SourceKind { KAIRO_COMPATIBLE, ANILIST, JELLYFIN, LOCAL }
+data class PlaybackEpisode(
+    val id: String,
+    val number: Int,
+    val seasonNumber: Int = 0,
+    val title: String = "",
+    val directUri: String = "",
+    val recordId: String = "",
+    val subtitleUri: String = "",
+    val qualityLabel: String = ""
+)
+
+data class PlaybackNavigation(
+    val animeId: String,
+    val animeTitle: String,
+    val animeUrl: String = "",
+    val sourceId: String,
+    val languageCode: String,
+    val languageName: String,
+    val currentEpisodeId: String,
+    val episodes: List<PlaybackEpisode>,
+    val complete: Boolean = true
+)
+
+enum class SourceKind { KAIRO_COMPATIBLE, STREMIO, ANILIST, JELLYFIN, LOCAL }
 
 data class SourceDefinition(
     val id: String,
@@ -58,7 +81,12 @@ data class SourceDefinition(
     val builtIn: Boolean = false,
     val kind: SourceKind = SourceKind.KAIRO_COMPATIBLE,
     val authToken: String = "",
-    val userId: String = ""
+    val userId: String = "",
+    val addonId: String = "",
+    val addonVersion: String = "",
+    val addonDescription: String = "",
+    val addonResources: String = "",
+    val addonP2p: Boolean = false
 )
 
 data class DownloadRecord(
@@ -96,7 +124,7 @@ fun languageLabel(code: String, fallback: String): String {
     val normalized = code.lowercase()
     return when {
         normalized.startsWith("en") || normalized == "eng" -> "English"
-        normalized.startsWith("hi") || normalized == "hin" -> "Hindi"
+        normalized.startsWith("hi") || normalized == "hin" || fallback.contains("hindi", true) -> "Hindi Dubbed"
         normalized.startsWith("ja") || normalized == "jpn" -> "Japanese"
         normalized.startsWith("es") || normalized == "spa" -> "Spanish"
         normalized.startsWith("fr") || normalized == "fra" -> "French"

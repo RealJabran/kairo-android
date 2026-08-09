@@ -9,6 +9,15 @@ import java.util.UUID
 class KairoPreferences(context: Context) {
     private val prefs = context.getSharedPreferences("kairo_preferences", Context.MODE_PRIVATE)
 
+    init {
+        if (listOf("opensubtitles_api_key", "opensubtitles_token", "opensubtitles_base_url", "subtitle_language", "auto_download_captions").any(prefs::contains)) {
+            prefs.edit()
+                .remove("opensubtitles_api_key").remove("opensubtitles_token").remove("opensubtitles_base_url")
+                .remove("subtitle_language").remove("auto_download_captions")
+                .apply()
+        }
+    }
+
     var downloadTreeUri: String?
         get() = prefs.getString("download_tree", null)
         set(value) { prefs.edit().putString("download_tree", value).apply() }
@@ -28,34 +37,6 @@ class KairoPreferences(context: Context) {
     var instantPlaybackEnabled: Boolean
         get() = prefs.getBoolean("instant_playback", false)
         set(value) { prefs.edit().putBoolean("instant_playback", value).apply() }
-
-    var openSubtitlesApiKey: String
-        get() = prefs.getString("opensubtitles_api_key", "").orEmpty()
-        set(value) { prefs.edit().putString("opensubtitles_api_key", value).apply() }
-
-    var openSubtitlesToken: String
-        get() = prefs.getString("opensubtitles_token", "").orEmpty()
-        set(value) { prefs.edit().putString("opensubtitles_token", value).apply() }
-
-    var openSubtitlesBaseUrl: String
-        get() = prefs.getString("opensubtitles_base_url", "https://api.opensubtitles.com/api/v1") ?: "https://api.opensubtitles.com/api/v1"
-        set(value) { prefs.edit().putString("opensubtitles_base_url", value).apply() }
-
-    var subtitleLanguage: String
-        get() = prefs.getString("subtitle_language", "English") ?: "English"
-        set(value) { prefs.edit().putString("subtitle_language", value).apply() }
-
-    var autoDownloadCaptions: Boolean
-        get() = prefs.getBoolean("auto_download_captions", false)
-        set(value) { prefs.edit().putBoolean("auto_download_captions", value).apply() }
-
-    val openSubtitlesConnected: Boolean
-        get() = openSubtitlesApiKey.isNotBlank() && openSubtitlesToken.isNotBlank()
-
-    fun disconnectOpenSubtitles() {
-        prefs.edit().remove("opensubtitles_api_key").remove("opensubtitles_token").remove("opensubtitles_base_url")
-            .putBoolean("auto_download_captions", false).apply()
-    }
 
     fun sources(): List<SourceDefinition> {
         val builtIns = listOf(
@@ -77,7 +58,12 @@ class KairoPreferences(context: Context) {
                         enabled = item.optBoolean("enabled", true),
                         kind = runCatching { SourceKind.valueOf(item.optString("kind", SourceKind.KAIRO_COMPATIBLE.name)) }.getOrDefault(SourceKind.KAIRO_COMPATIBLE),
                         authToken = item.optString("authToken"),
-                        userId = item.optString("userId")
+                        userId = item.optString("userId"),
+                        addonId = item.optString("addonId"),
+                        addonVersion = item.optString("addonVersion"),
+                        addonDescription = item.optString("addonDescription"),
+                        addonResources = item.optString("addonResources"),
+                        addonP2p = item.optBoolean("addonP2p")
                     ))
                 }
             }
@@ -99,6 +85,36 @@ class KairoPreferences(context: Context) {
         return source
     }
 
+    fun addStremioSource(
+        name: String,
+        manifestUrl: String,
+        addonId: String,
+        addonVersion: String,
+        description: String,
+        resources: Set<String>,
+        p2p: Boolean
+    ): SourceDefinition {
+        val current = sources().filterNot { it.builtIn }
+        val duplicate = current.firstOrNull {
+            it.kind == SourceKind.STREMIO &&
+                (it.baseUrl.equals(manifestUrl, true) || addonId.isNotBlank() && it.addonId == addonId)
+        }
+        val source = SourceDefinition(
+            id = duplicate?.id ?: UUID.randomUUID().toString(),
+            name = name.trim(),
+            baseUrl = manifestUrl.trim(),
+            enabled = true,
+            kind = SourceKind.STREMIO,
+            addonId = addonId,
+            addonVersion = addonVersion,
+            addonDescription = description,
+            addonResources = resources.sorted().joinToString(","),
+            addonP2p = p2p
+        )
+        saveSources(current.filterNot { it.id == duplicate?.id } + source)
+        return source
+    }
+
     fun removeSource(id: String) {
         saveSources(sources().filterNot { it.builtIn || it.id == id })
         if (selectedSourceId == id) selectedSourceId = "anidb"
@@ -106,6 +122,18 @@ class KairoPreferences(context: Context) {
 
     fun toggleSource(id: String) {
         saveSources(sources().filterNot { it.builtIn }.map { if (it.id == id) it.copy(enabled = !it.enabled) else it })
+    }
+
+    fun moveSource(id: String, direction: Int) {
+        if (direction == 0) return
+        val custom = sources().filterNot { it.builtIn }.toMutableList()
+        val from = custom.indexOfFirst { it.id == id }
+        if (from < 0) return
+        val to = (from + direction).coerceIn(0, custom.lastIndex)
+        if (from == to) return
+        val moved = custom.removeAt(from)
+        custom.add(to, moved)
+        saveSources(custom)
     }
 
     private fun saveSources(items: List<SourceDefinition>) {
@@ -119,6 +147,11 @@ class KairoPreferences(context: Context) {
                 put("kind", source.kind.name)
                 put("authToken", source.authToken)
                 put("userId", source.userId)
+                put("addonId", source.addonId)
+                put("addonVersion", source.addonVersion)
+                put("addonDescription", source.addonDescription)
+                put("addonResources", source.addonResources)
+                put("addonP2p", source.addonP2p)
             })
         }
         prefs.edit().putString("sources", array.toString()).apply()
