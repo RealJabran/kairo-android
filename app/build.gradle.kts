@@ -11,8 +11,8 @@ android {
         applicationId = "app.kairo.anime"
         minSdk = 26
         targetSdk = 36
-        versionCode = 11
-        versionName = "2.1.1"
+        versionCode = 12
+        versionName = "2.2.0"
     }
 
     buildFeatures {
@@ -54,6 +54,7 @@ dependencies {
     implementation("androidx.documentfile:documentfile:1.1.0")
     implementation("androidx.media3:media3-exoplayer:1.10.1")
     implementation("androidx.media3:media3-exoplayer-hls:1.10.1")
+    implementation("androidx.media3:media3-transformer:1.10.1")
     implementation("androidx.media3:media3-ui:1.10.1")
     implementation("org.jsoup:jsoup:1.23.1")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")

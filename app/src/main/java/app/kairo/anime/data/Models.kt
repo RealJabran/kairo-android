@@ -45,7 +45,8 @@ data class QualityOption(
     val estimatedBytes: Long = 0,
     val bandwidthBitsPerSecond: Long = 0,
     val delivery: DeliveryKind = DeliveryKind.HLS,
-    val container: String = "mp4"
+    val container: String = "mp4",
+    val hlsAudioUrl: String = ""
 )
 
 data class PlaybackEpisode(

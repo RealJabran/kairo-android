@@ -62,13 +62,29 @@ class KairoCompatibleAdapter : AnimeSourceAdapter {
         if (variants.isEmpty()) return listOf(QualityOption("Auto", absoluteStream))
         val fixed = variants.map { variant ->
             val mediaPlaylist = runCatching { SourceHttp.get(variant.url, source.baseUrl) }.getOrDefault("")
-            QualityOption(variant.label, variant.url, estimateSize(mediaPlaylist, variant.bandwidth), variant.bandwidth)
+            QualityOption(
+                label = variant.label,
+                url = variant.url,
+                estimatedBytes = estimateSize(mediaPlaylist, variant.bandwidth),
+                bandwidthBitsPerSecond = variant.bandwidth,
+                hlsAudioUrl = variant.audioUrl
+            )
         }.sortedBy { it.label.filter(Char::isDigit).toIntOrNull() ?: Int.MAX_VALUE }
         return listOf(QualityOption("Auto", absoluteStream)) + fixed
     }
 
-    fun validate(baseUrl: String): Boolean = runCatching {
-        SourceHttp.document("${baseUrl.trimEnd('/')}/browse", baseUrl).select("a[href*=/anime/]").isNotEmpty()
+    suspend fun validate(baseUrl: String): Boolean = runCatching {
+        val normalized = baseUrl.trim().trimEnd('/')
+        val candidate = SourceDefinition("validation", "Validation", normalized)
+        val anime = parseAnimeCards(SourceHttp.document("$normalized/browse", normalized), candidate).firstOrNull()
+            ?: error("The source browse page contains no anime")
+        val episodes = episodes(anime.id, candidate)
+        val episode = episodes.firstOrNull() ?: error("The source returned no episodes")
+        val languages = languages(episode, candidate)
+        require(languages.isNotEmpty() && languages.all { it.embedUrl.isNotBlank() }) {
+            "The source returned no playable language endpoints"
+        }
+        true
     }.getOrDefault(false)
 
     private fun parseAnimeCards(document: Document, source: SourceDefinition): List<Anime> {
@@ -87,18 +103,37 @@ class KairoCompatibleAdapter : AnimeSourceAdapter {
         }.distinctBy(Anime::id).take(80)
     }
 
-    private data class Variant(val label: String, val url: String, val bandwidth: Long)
+    private data class Variant(val label: String, val url: String, val bandwidth: Long, val audioUrl: String)
 
     private fun parseMasterPlaylist(text: String, playlistUrl: String): List<Variant> {
         val lines = text.lineSequence().map(String::trim).toList()
+        val audioRenditions = lines.filter { it.startsWith("#EXT-X-MEDIA:") && attribute(it, "TYPE") == "AUDIO" }
+            .mapNotNull { line ->
+                val group = attribute(line, "GROUP-ID") ?: return@mapNotNull null
+                val uri = attribute(line, "URI") ?: return@mapNotNull null
+                AudioRendition(group, KairoRepository.resolveUrl(uri, playlistUrl), attribute(line, "DEFAULT") == "YES")
+            }
         return lines.mapIndexedNotNull { index, line ->
             if (!line.startsWith("#EXT-X-STREAM-INF")) return@mapIndexedNotNull null
             val next = lines.drop(index + 1).firstOrNull { it.isNotBlank() && !it.startsWith("#") } ?: return@mapIndexedNotNull null
             val resolution = Regex("RESOLUTION=([0-9]+x[0-9]+)").find(line)?.groupValues?.get(1)?.substringAfter('x')?.plus("p")
             val bandwidth = Regex("BANDWIDTH=(\\d+)").find(line)?.groupValues?.get(1)?.toLongOrNull() ?: 0
             val label = resolution ?: bandwidth.takeIf { it > 0 }?.let { String.format(Locale.US, "%.1f Mbps", it / 1_000_000.0) } ?: "Auto"
-            Variant(label, KairoRepository.resolveUrl(next, playlistUrl), bandwidth)
+            val audioGroup = attribute(line, "AUDIO")
+            val audio = audioGroup?.let { group ->
+                audioRenditions.firstOrNull { it.group == group && it.default }
+                    ?: audioRenditions.firstOrNull { it.group == group }
+            }
+            Variant(label, KairoRepository.resolveUrl(next, playlistUrl), bandwidth, audio?.url.orEmpty())
         }.distinctBy(Variant::label)
+    }
+
+    private data class AudioRendition(val group: String, val url: String, val default: Boolean)
+
+    private fun attribute(line: String, name: String): String? {
+        val value = Regex("(?:^|,)$name=(\\\"[^\\\"]*\\\"|[^,]*)").find(line.substringAfter(':'))
+            ?.groupValues?.get(1)?.trim().orEmpty()
+        return value.trim('"').takeIf(String::isNotBlank)
     }
 
     private fun estimateSize(mediaPlaylist: String, bandwidth: Long): Long {

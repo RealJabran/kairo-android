@@ -1,62 +1,83 @@
+<div align="center">
+
 # Kairo
 
-Kairo is a polished personal Android anime browser, watchlist, and offline library. It uses the independent package `app.kairo.anime`, a custom visual identity, responsive Jetpack Compose screens, WorkManager downloads, and a Media3/ExoPlayer video player.
+### Your anime. Your sources. One cinematic Android player.
 
-## Highlights
+[![Android](https://img.shields.io/badge/Android-8.0%2B-3DDC84?logo=android&logoColor=white)](https://developer.android.com/)
+[![Kotlin](https://img.shields.io/badge/Kotlin-Jetpack%20Compose-7F52FF?logo=kotlin&logoColor=white)](https://kotlinlang.org/)
+[![CI](https://github.com/RealJabran/kairo-android/actions/workflows/android-ci.yml/badge.svg)](https://github.com/RealJabran/kairo-android/actions/workflows/android-ci.yml)
+[![Latest release](https://img.shields.io/github/v/release/RealJabran/kairo-android?display_name=tag&sort=semver)](https://github.com/RealJabran/kairo-android/releases/latest)
 
-- Rich adaptive Discover, Detail, Library, and Settings screens
-- Correct status-bar and navigation-bar safe areas
-- Episode-specific audio-language selection, including Hindi Dubbed whenever the active source provides it
-- Video-quality selection with an estimated size before download
-- Live download speed, transferred size, and completed file size
-- Existing-download detection with watch and alternate-quality actions
-- Continue-watching progress and a personal watchlist
-- User-selected download folder through Android's Storage Access Framework
-- Encrypted and unencrypted HLS segment support
-- Fully custom Kairo Media3 player with a cinematic controller, precise timeline scrubbing, buffering state, replay, transport controls, and automatic control hiding
-- Playback-aware screen wake lock so the display remains on while a video is playing or buffering
-- Download-first playback by default, with an optional Instant playback setting that shows both **Watch now** and **Download**
-- Reliable full-screen left/right double-tap zones for 10-second rewind and forward; a single tap reveals controls
-- Persistent MX Player-style vertical gesture zones: brightness on the left and media volume on the right, whether controls are visible or hidden
-- Always-visible previous/next episode buttons that rebuild the full source queue when playback starts from a single downloaded file
-- Playback speeds from 0.5× to 2×, embedded audio/subtitle track selectors, control lock, picture-in-picture, and Fit/Crop/Stretch/100% display cycling
-- One-tap display-mode cycling through Fit, Crop, Stretch, and 100%
-- Credential-free public OpenSubtitles search inside the player, with format-aware download and forced text-track selection
-- In-player quality switching between Auto and every resolved stream quality without losing playback position
-- A provider-adapter system for streaming catalogs, Stremio-compatible add-ons, AniList discovery, Jellyfin, and on-device folders
-- A native Stremio add-on manager with manifest validation, automatic capability detection, enable/remove controls, and drag-free priority arrows
-- Cross-add-on resolution: browse with a catalog add-on, then check every enabled stream add-on in priority order
-- Private display of personalized add-on URLs and explicit filtering of unsupported torrent-only results
+[Download APK](https://github.com/RealJabran/kairo-android/releases/latest) · [Report a bug](https://github.com/RealJabran/kairo-android/issues/new?template=bug_report.yml) · [Build from source](#build-from-source)
 
-## Sources
+</div>
 
-| Source | Browse/search | Play | Download | Notes |
-| --- | --- | --- | --- | --- |
-| Kairo Stream | Yes | Yes | Yes | Built-in compatible streaming catalog |
-| Stremio add-on | When provided | Direct HTTP(S) streams | Direct HTTP(S) streams | Catalog, metadata, and resolver add-ons can work together |
-| AniList | Yes | No | No | High-quality discovery and metadata; use **Find** to search a playable provider |
-| Jellyfin | Yes | Yes | Yes | Connects to a personal Jellyfin server and preserves embedded audio/subtitle tracks |
-| On device | Yes | Yes | Already local | Reads anime from a folder selected with Android's system folder picker |
+Kairo is a personal Android anime browser, watchlist, offline library, and Media3 player. It combines built-in discovery with Jellyfin, on-device folders, Kairo-compatible providers, and Stremio-compatible catalog or direct-stream add-ons.
 
-To connect Jellyfin, open **Settings → Add a source → Jellyfin**, enter the server URL and an access token/API key, then validate the connection. Prefer HTTPS whenever the server is reachable outside your home network. Kairo keeps the token in private app storage and disables Android backup for the app.
+> Kairo does not host media. Add only services you trust and are permitted to use. Bare torrents, NZB/archive transports, YouTube IDs, and external playback pages are intentionally unsupported.
 
-Kairo defaults to downloading remote episodes before playback. To stream without downloading, enable **Settings → Instant playback**. Episode sheets will then offer both **Watch now** and **Download**. Local files always remain directly playable.
+## Install
+
+1. Open the [latest GitHub Release](https://github.com/RealJabran/kairo-android/releases/latest).
+2. Download the file ending in `.apk` under **Assets**.
+3. Open it on Android and allow installation from your browser or file manager when prompted.
+
+Android 8.0 or newer is required. The package name is `app.kairo.anime`.
+
+## What makes Kairo different
+
+| Experience | Included |
+| --- | --- |
+| Discover | Adaptive catalog grid, search, rich details, genres, status, and watchlist |
+| Watch | Instant playback or download-first mode, selectable language and quality |
+| Player | Media3, quality switching, online captions, gestures, PiP, playback speed, screen modes, next/previous episode |
+| Offline | Live speed and size, safe replacement downloads, progress, completed-file sizes |
+| Sources | Kairo Stream, AniList, Jellyfin, local folders, compatible servers, Stremio add-ons |
+| Privacy | Personalized source URLs stay private in the UI; Android backup is disabled |
+
+## Player highlights
+
+- Double-tap the left or right half to seek backward or forward 10 seconds.
+- Swipe vertically on the left for brightness and on the right for volume.
+- Cycle Fit, Crop, Stretch, and 100% without opening another menu.
+- Switch stream quality without losing the current position.
+- Select embedded audio/subtitle tracks or search public online captions.
+- Keep the screen awake during playback and continue in picture-in-picture.
+- Move between previous and next episodes from the player.
+
+## Offline downloads
+
+Kairo downloads direct files and HLS streams into a folder you choose with Android's Storage Access Framework. Version 2.2 uses Media3's HLS export pipeline so adaptive streams are written as progressive MP4 files with:
+
+- byte-range playlists handled correctly;
+- separate HLS audio/video renditions combined into one playable file;
+- encrypted HLS input handled by the media pipeline;
+- an existing download preserved until its replacement is fully complete.
+
+## Content sources
 
 ### Stremio-compatible add-ons
 
-Open **Settings → Add a source → Stremio**, then paste either the add-on's full `https://…/manifest.json` URL or its `stremio://…` install link. Kairo also registers as a handler for Stremio install links, so tapping **Install** on an add-on configuration page can open the same prefilled validation dialog directly. Kairo validates the manifest and reads the add-on name, version, and advertised catalog, metadata, stream, and subtitle capabilities automatically. If an add-on has its own configuration page, configure it first and use the personalized install URL it gives you.
+Open **Settings → Add a source → Stremio**, then paste an `https://…/manifest.json` URL or a `stremio://…` install link. Kairo can also receive Stremio install links directly from an add-on configuration page.
 
-Installed add-ons can be enabled, disabled, removed, or moved up and down in Settings. Order is significant: Kairo asks enabled stream add-ons in that order and uses the order to rank otherwise equivalent results. A catalog-only add-on can still power Discover while separate stream add-ons resolve episodes for the same IDs.
+Kairo reads the manifest name, version, and capabilities automatically. Catalog-only add-ons can power Discover while separate enabled stream add-ons resolve matching media IDs. Use the arrows in Settings to control resolver priority.
 
-Kairo currently plays direct HTTP(S) media URLs, including HLS and direct video files. It intentionally skips bare torrent hashes, NZB/archive transports, YouTube IDs, and external web pages because those require separate playback engines. A configured add-on or debrid service may work when it returns an authorized direct HTTP(S) stream. Only install add-ons and access media you trust and are permitted to use. Startup speed ultimately depends on the add-on, its upstream host/CDN, your account tier, and your network; Kairo caches manifests and short-lived stream results but cannot make a slow upstream perform like Netflix.
+Only direct HTTP(S) media returned by an add-on can be played. Startup speed depends on the add-on, its upstream CDN, your service account, and your network.
 
-For captions without a local file, use the caption button inside the player, choose a language, and select a result. Kairo resolves the title through Stremio's official Cinemeta catalog and searches its public OpenSubtitles v3 add-on—no API key, username, or password is required.
+### Jellyfin
 
-Jellyfin addresses are specific to your own server. Typical forms are `http://192.168.1.50:8096` on home Wi-Fi, `http://100.64.0.10:8096` over a private VPN such as Tailscale, or `https://jellyfin.yourdomain.com` behind a secure reverse proxy. Create a dedicated key under **Jellyfin Dashboard → API Keys**, then enter that key with the reachable server URL.
+Open **Settings → Add a source → Jellyfin** and enter your server URL plus a dedicated API key. Common URL patterns include:
 
-The built-in compatible source is `https://anidb.app`, so it does not need to be added again. Custom compatible deployments commonly use addresses such as `http://192.168.1.50:3000` on a LAN or `https://anime.yourdomain.com` when hosted. Those are address patterns—not public streaming services—and only work when a server implementing the contract below is actually deployed there.
+- Home network: `http://192.168.1.50:8096`
+- Private VPN: `http://100.64.0.10:8096`
+- Reverse proxy: `https://jellyfin.example.com`
 
-For an on-device library, choose **Settings → On-device anime folder**. A useful layout is:
+Prefer HTTPS outside your home network. Credentials are stored in the app's private preferences and excluded from Android backup.
+
+### On-device library
+
+Choose **Settings → On-device anime folder**. Kairo understands common filenames such as `Episode 01`, `E01`, and `S01E01`. A recommended structure is:
 
 ```text
 Anime/
@@ -67,34 +88,52 @@ Anime/
       S01E02.mkv
 ```
 
-Loose video files and common names such as `Episode 01`, `E01`, and `S01E01` are also recognized.
+### Kairo-compatible server contract
 
-## Build
+A compatible custom server must expose working responses for all required routes:
 
-On Linux, run:
+```text
+/browse
+/search/suggestions?q=...
+/api/frontend/anime/{id}/episodes
+/api/frontend/episode/{id}/languages
+```
+
+Kairo validates a representative browse result, episode response, and language/embed response before saving the server.
+
+## Build from source
+
+### One-command Linux build
 
 ```bash
+git clone https://github.com/RealJabran/kairo-android.git
+cd kairo-android
 chmod +x build-apk.sh
 ./build-apk.sh
 ```
 
-The build script downloads a pinned Gradle distribution and lets the Android Gradle plugin provision the required SDK. The test APK is written to:
+The script provisions its private Gradle/Android build tools when needed and writes:
 
 ```text
-output/Kairo-2.1.1-test.apk
+output/Kairo-2.2.0.apk
 ```
 
-You can also open the project directly in a recent Android Studio release and run the `app` configuration.
+If `JAVA_HOME` already points to JDK 17, the script reuses it. You can also open the project in a recent Android Studio release and run the `app` configuration.
 
-## Compatible source contract
+## Project map
 
-A custom source must expose the same public routes used by the built-in provider:
+```text
+app/src/main/java/app/kairo/anime/
+├── data/       Models, preferences, repository, captions, source adapters
+├── download/   WorkManager download and Media3 HLS export pipeline
+├── player/     Full-screen Media3 player and gesture controls
+└── ui/         Jetpack Compose application screens and theme
+```
 
-- `/browse`
-- `/search/suggestions?q=...`
-- `/api/frontend/anime/{id}/episodes`
-- `/api/frontend/episode/{id}/languages`
+## Contributing
 
-The language response must contain an `embed_url` that ultimately exposes an HLS (`.m3u8`) stream. Arbitrary websites cannot be added without writing a dedicated adapter for their HTML/API structure.
+Bug reports and focused improvements are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Please do not post source credentials, personalized add-on URLs, copyrighted media, or private server addresses in issues.
 
-Each different service belongs in a dedicated `AnimeSourceAdapter`. This keeps catalog discovery separate from episode lookup, language selection, playable qualities, and delivery type. New adapters can therefore declare whether media is HLS, a direct file, or already local without leaking provider-specific behavior into the UI.
+## Release history
+
+See [CHANGELOG.md](CHANGELOG.md) for notable changes and [GitHub Releases](https://github.com/RealJabran/kairo-android/releases) for installable APKs.

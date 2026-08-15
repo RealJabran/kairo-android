@@ -177,7 +177,7 @@ class KairoPreferences(context: Context) {
         }.getOrDefault(emptyList())
     }
 
-    @Synchronized fun addDownload(record: DownloadRecord) {
+    @Synchronized fun addDownload(record: DownloadRecord): Boolean {
         val items = downloads().filterNot {
             it.id == record.id || (
                 it.animeTitle.equals(record.animeTitle, true) &&
@@ -198,7 +198,7 @@ class KairoPreferences(context: Context) {
                 put("subtitleUri", item.subtitleUri)
             })
         }
-        prefs.edit().putString("downloads", array.toString()).commit()
+        return prefs.edit().putString("downloads", array.toString()).commit()
     }
 
     @Synchronized fun removeDownload(id: String) {

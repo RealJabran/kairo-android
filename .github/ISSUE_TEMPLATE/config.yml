@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Download the latest APK
+    url: https://github.com/RealJabran/kairo-android/releases/latest
+    about: Check whether the issue is already fixed in the newest release.
