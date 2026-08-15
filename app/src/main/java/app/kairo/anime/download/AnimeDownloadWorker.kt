@@ -5,9 +5,25 @@ import android.app.NotificationManager
 import android.content.Context
 import android.net.Uri
 import android.os.Build
+import android.os.Looper
 import android.os.SystemClock
+import androidx.annotation.OptIn
 import androidx.core.app.NotificationCompat
 import androidx.documentfile.provider.DocumentFile
+import androidx.media3.common.MediaItem
+import androidx.media3.common.MimeTypes
+import androidx.media3.common.util.Clock
+import androidx.media3.common.util.UnstableApi
+import androidx.media3.datasource.DefaultDataSource
+import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.transformer.Composition
+import androidx.media3.transformer.DefaultDecoderFactory
+import androidx.media3.transformer.ExoPlayerAssetLoader
+import androidx.media3.transformer.ExportException
+import androidx.media3.transformer.ExportResult
+import androidx.media3.transformer.ProgressHolder
+import androidx.media3.transformer.Transformer
 import androidx.work.CoroutineWorker
 import androidx.work.ForegroundInfo
 import androidx.work.WorkerParameters
@@ -17,18 +33,16 @@ import app.kairo.anime.data.DownloadRecord
 import app.kairo.anime.data.DeliveryKind
 import app.kairo.anime.data.KairoPreferences
 import app.kairo.anime.data.KairoRepository
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import java.io.ByteArrayInputStream
-import java.io.InputStream
+import java.io.File
 import java.io.OutputStream
 import java.net.HttpURLConnection
 import java.net.URL
-import java.security.MessageDigest
-import javax.crypto.Cipher
-import javax.crypto.spec.IvParameterSpec
-import javax.crypto.spec.SecretKeySpec
 
+@OptIn(UnstableApi::class)
 class AnimeDownloadWorker(context: Context, parameters: WorkerParameters) : CoroutineWorker(context, parameters) {
     private val preferences = KairoPreferences(context)
 
@@ -37,33 +51,70 @@ class AnimeDownloadWorker(context: Context, parameters: WorkerParameters) : Coro
         val episodeLabel = inputData.getString("episodeLabel") ?: return@withContext Result.failure()
         val language = inputData.getString("language").orEmpty()
         val quality = inputData.getString("quality").orEmpty()
-        val playlistUrl = inputData.getString("playlistUrl") ?: return@withContext Result.failure()
-        val sourceBase = inputData.getString("sourceBase") ?: playlistUrl
+        val mediaUrl = inputData.getString("playlistUrl") ?: return@withContext Result.failure()
+        val sourceBase = inputData.getString("sourceBase") ?: mediaUrl
         val estimatedBytes = inputData.getLong("estimatedBytes", 0)
-        val delivery = runCatching { DeliveryKind.valueOf(inputData.getString("delivery") ?: DeliveryKind.HLS.name) }.getOrDefault(DeliveryKind.HLS)
-        val container = sanitize(inputData.getString("container").orEmpty().ifBlank { "mp4" }).lowercase()
+        val delivery = runCatching {
+            DeliveryKind.valueOf(inputData.getString("delivery") ?: DeliveryKind.HLS.name)
+        }.getOrDefault(DeliveryKind.HLS)
+        val requestedContainer = sanitize(inputData.getString("container").orEmpty().ifBlank { "mp4" }).lowercase()
+        val container = if (delivery == DeliveryKind.HLS) "mp4" else requestedContainer
         val authToken = inputData.getString("authToken").orEmpty()
-        val tree = preferences.downloadTreeUri?.let(Uri::parse) ?: return@withContext Result.failure(workDataOf("error" to "Choose a download folder in Settings"))
+        val hlsAudioUrl = inputData.getString("hlsAudioUrl").orEmpty()
+        val tree = preferences.downloadTreeUri?.let(Uri::parse)
+            ?: return@withContext Result.failure(workDataOf("error" to "Choose a download folder in Settings"))
+        val previousVersions = preferences.downloads().filter {
+            it.animeTitle.equals(animeTitle, true) && it.episodeLabel.equals(episodeLabel, true) &&
+                it.language.equals(language, true) && it.quality.equals(quality, true)
+        }
 
         setForeground(foregroundInfo(animeTitle, episodeLabel, 0))
         setProgress(progressData(animeTitle, episodeLabel, 0, 0, estimatedBytes, 0, delivery == DeliveryKind.HLS))
 
         var partialUri: Uri? = null
+        var stagedFile: File? = null
         runCatching {
-            val root = DocumentFile.fromTreeUri(applicationContext, tree) ?: error("Download folder is unavailable")
-            val animeDir = root.findFile(sanitize(animeTitle)) ?: root.createDirectory(sanitize(animeTitle)) ?: error("Cannot create anime folder")
-            val outputName = "${sanitize(episodeLabel)} • ${sanitize(language)} • ${sanitize(quality)}.$container"
-            animeDir.findFile(outputName)?.delete()
-            val output = animeDir.createFile(videoMime(container), outputName) ?: error("Cannot create output file")
-            partialUri = output.uri
-            val written = applicationContext.contentResolver.openOutputStream(output.uri, "w")!!.use { destination ->
-                when (delivery) {
-                    DeliveryKind.DIRECT -> downloadDirect(playlistUrl, sourceBase, authToken, destination, animeTitle, episodeLabel, estimatedBytes)
-                    DeliveryKind.HLS -> downloadHls(playlistUrl, sourceBase, destination, animeTitle, episodeLabel, estimatedBytes)
-                    DeliveryKind.LOCAL -> error("Local files do not need to be downloaded")
+            val root = DocumentFile.fromTreeUri(applicationContext, tree)
+                ?: error("Download folder is unavailable")
+            val animeDir = root.findFile(sanitize(animeTitle))
+                ?: root.createDirectory(sanitize(animeTitle))
+                ?: error("Cannot create anime folder")
+
+            if (delivery == DeliveryKind.LOCAL) error("Local files do not need to be downloaded")
+
+            val outputName = buildString {
+                append(sanitize(episodeLabel)).append(" • ").append(sanitize(language)).append(" • ")
+                append(sanitize(quality)).append(" • ").append(id.toString().take(8)).append('.').append(container)
+            }
+
+            val written: Long
+            val output: DocumentFile
+            if (delivery == DeliveryKind.HLS) {
+                stagedFile = exportHls(
+                    mediaUrl = mediaUrl,
+                    externalAudioUrl = hlsAudioUrl,
+                    referer = sourceBase,
+                    authToken = authToken,
+                    anime = animeTitle,
+                    episode = episodeLabel,
+                    estimate = estimatedBytes
+                )
+                output = animeDir.createFile(videoMime(container), outputName)
+                    ?: error("Cannot create output file")
+                partialUri = output.uri
+                written = applicationContext.contentResolver.openOutputStream(output.uri, "w")!!.use { destination ->
+                    stagedFile!!.inputStream().use { input -> input.copyTo(destination, 128 * 1024) }
+                }
+            } else {
+                output = animeDir.createFile(videoMime(container), outputName)
+                    ?: error("Cannot create output file")
+                partialUri = output.uri
+                written = applicationContext.contentResolver.openOutputStream(output.uri, "w")!!.use { destination ->
+                    downloadDirect(mediaUrl, sourceBase, authToken, destination, animeTitle, episodeLabel, estimatedBytes)
                 }
             }
-            preferences.addDownload(DownloadRecord(
+
+            val record = DownloadRecord(
                 id = id.toString(), animeTitle = animeTitle, episodeLabel = episodeLabel,
                 language = language, quality = quality, uri = output.uri.toString(),
                 bytes = written, completedAt = System.currentTimeMillis(),
@@ -74,12 +125,26 @@ class AnimeDownloadWorker(context: Context, parameters: WorkerParameters) : Coro
                 episodeNumber = inputData.getInt("episodeNumber", 0),
                 episodeId = inputData.getString("episodeId").orEmpty(),
                 seasonNumber = inputData.getInt("seasonNumber", 0)
-            ))
+            )
+            check(preferences.addDownload(record)) { "Could not save the completed download" }
+
+            // The completed replacement is durable before an older version is removed. If the
+            // process dies during cleanup the worst outcome is an orphaned old file, never data loss.
+            previousVersions.filterNot { it.uri == record.uri }.forEach { previous ->
+                runCatching { applicationContext.contentResolver.delete(Uri.parse(previous.uri), null, null) }
+                previous.subtitleUri.takeIf(String::isNotBlank)?.let { subtitle ->
+                    runCatching { applicationContext.contentResolver.delete(Uri.parse(subtitle), null, null) }
+                }
+            }
+
             partialUri = null
+            setProgress(progressData(animeTitle, episodeLabel, 100, written, written, 0, false))
             Result.success(workDataOf("uri" to output.uri.toString()))
         }.getOrElse { error ->
             partialUri?.let { runCatching { applicationContext.contentResolver.delete(it, null, null) } }
             Result.failure(workDataOf("error" to (error.message ?: "Download failed")))
+        }.also {
+            stagedFile?.delete()
         }
     }
 
@@ -91,8 +156,9 @@ class AnimeDownloadWorker(context: Context, parameters: WorkerParameters) : Coro
             .setContentTitle(anime)
             .setContentText("$episode • $progress%")
             .setOnlyAlertOnce(true).setOngoing(true).setProgress(100, progress, progress == 0).build()
-        return if (Build.VERSION.SDK_INT >= 29) ForegroundInfo(id.hashCode(), notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
-        else ForegroundInfo(id.hashCode(), notification)
+        return if (Build.VERSION.SDK_INT >= 29) {
+            ForegroundInfo(id.hashCode(), notification, android.content.pm.ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else ForegroundInfo(id.hashCode(), notification)
     }
 
     private fun progressData(
@@ -151,98 +217,107 @@ class AnimeDownloadWorker(context: Context, parameters: WorkerParameters) : Coro
         return written
     }
 
-    private suspend fun downloadHls(
-        playlistUrl: String,
-        sourceBase: String,
-        destination: OutputStream,
+    private suspend fun exportHls(
+        mediaUrl: String,
+        externalAudioUrl: String,
+        referer: String,
+        authToken: String,
         anime: String,
         episode: String,
         estimate: Long
-    ): Long {
-        var mediaUrl = playlistUrl
-        var playlist = getText(mediaUrl, sourceBase)
-        if (playlist.contains("#EXT-X-STREAM-INF")) {
-            mediaUrl = parseVariants(playlist, mediaUrl).lastOrNull() ?: error("No HLS variant found")
-            playlist = getText(mediaUrl, sourceBase)
-        }
-        val parsed = parseMediaPlaylist(playlist, mediaUrl)
-        if (parsed.segments.isEmpty()) error("The stream contains no video segments")
-        var written = 0L
-        val startedAt = SystemClock.elapsedRealtime()
-        parsed.initSegment?.let { initUrl -> open(initUrl, sourceBase).use { written += it.copyTo(destination) } }
-        parsed.segments.forEachIndexed { index, segment ->
-            if (isStopped) error("Download cancelled")
-            val bytes = open(segment.url, sourceBase).use(InputStream::readBytes)
-            val decoded = segment.key?.let { decrypt(bytes, it, parsed.mediaSequence + index, sourceBase) } ?: bytes
-            ByteArrayInputStream(decoded).use { written += it.copyTo(destination) }
-            val percent = ((index + 1) * 100 / parsed.segments.size).coerceIn(0, 100)
-            val speed = written * 1_000L / (SystemClock.elapsedRealtime() - startedAt).coerceAtLeast(1)
-            setProgress(progressData(anime, episode, percent, written, estimate, speed, true))
-            setForeground(foregroundInfo(anime, episode, percent))
-        }
-        return written
-    }
-
-    private data class Encryption(val keyUrl: String, val iv: ByteArray?)
-    private data class Segment(val url: String, val key: Encryption?)
-    private data class MediaPlaylist(val segments: List<Segment>, val initSegment: String?, val mediaSequence: Int)
-
-    private fun parseVariants(text: String, base: String): List<String> {
-        val lines = text.lineSequence().map(String::trim).toList()
-        return lines.mapIndexedNotNull { index, line ->
-            if (!line.startsWith("#EXT-X-STREAM-INF")) null
-            else lines.drop(index + 1).firstOrNull { it.isNotBlank() && !it.startsWith("#") }?.let { KairoRepository.resolveUrl(it, base) }
-        }
-    }
-
-    private fun parseMediaPlaylist(text: String, base: String): MediaPlaylist {
-        var activeKey: Encryption? = null
-        var init: String? = null
-        var mediaSequence = 0
-        val segments = mutableListOf<Segment>()
-        text.lineSequence().map(String::trim).forEach { line ->
-            when {
-                line.startsWith("#EXT-X-MEDIA-SEQUENCE:") -> mediaSequence = line.substringAfter(':').toIntOrNull() ?: 0
-                line.startsWith("#EXT-X-MAP:") -> Regex("URI=\"([^\"]+)\"").find(line)?.groupValues?.get(1)?.let { init = KairoRepository.resolveUrl(it, base) }
-                line.startsWith("#EXT-X-KEY:") -> {
-                    if (line.contains("METHOD=NONE")) activeKey = null
-                    else {
-                        val keyUri = Regex("URI=\"([^\"]+)\"").find(line)?.groupValues?.get(1)
-                        val iv = Regex("IV=0x([0-9a-fA-F]+)").find(line)?.groupValues?.get(1)?.let(::hexToBytes)
-                        if (keyUri != null) activeKey = Encryption(KairoRepository.resolveUrl(keyUri, base), iv)
-                    }
-                }
-                line.isNotBlank() && !line.startsWith("#") -> segments += Segment(KairoRepository.resolveUrl(line, base), activeKey)
+    ): File {
+        val cache = applicationContext.externalCacheDir ?: applicationContext.cacheDir
+        val output = File(cache, "kairo-export-${id}.mp4").also { it.delete() }
+        val syntheticManifest = externalAudioUrl.takeIf(String::isNotBlank)?.let { audioUrl ->
+            File(cache, "kairo-master-${id}.m3u8").apply {
+                writeText(
+                    """
+                    #EXTM3U
+                    #EXT-X-VERSION:3
+                    #EXT-X-MEDIA:TYPE=AUDIO,GROUP-ID="kairo-audio",NAME="Selected audio",DEFAULT=YES,AUTOSELECT=YES,URI="${hlsValue(audioUrl)}"
+                    #EXT-X-STREAM-INF:BANDWIDTH=1,AUDIO="kairo-audio"
+                    ${hlsValue(mediaUrl)}
+                    """.trimIndent()
+                )
             }
         }
-        return MediaPlaylist(segments, init, mediaSequence)
-    }
+        val inputUri = syntheticManifest?.let(Uri::fromFile) ?: Uri.parse(mediaUrl)
+        val completion = CompletableDeferred<Throwable?>()
+        lateinit var transformer: Transformer
 
-    private fun decrypt(bytes: ByteArray, encryption: Encryption, sequence: Int, referer: String): ByteArray {
-        val key = open(encryption.keyUrl, referer).use(InputStream::readBytes)
-        val iv = encryption.iv ?: ByteArray(16).also { buffer ->
-            var value = sequence.toLong()
-            for (index in 15 downTo 0) { buffer[index] = (value and 0xff).toByte(); value = value shr 8 }
+        withContext(Dispatchers.Main.immediate) {
+            val headers = buildMap {
+                if (referer.isNotBlank()) put("Referer", referer)
+                if (authToken.isNotBlank()) put("X-Emby-Token", authToken)
+            }
+            val httpFactory = DefaultHttpDataSource.Factory()
+                .setUserAgent(KairoRepository.USER_AGENT)
+                .setAllowCrossProtocolRedirects(true)
+            if (headers.isNotEmpty()) httpFactory.setDefaultRequestProperties(headers)
+            val dataSourceFactory = DefaultDataSource.Factory(applicationContext, httpFactory)
+            val mediaSourceFactory = DefaultMediaSourceFactory(dataSourceFactory)
+            val assetLoaderFactory = ExoPlayerAssetLoader.Factory(
+                applicationContext,
+                DefaultDecoderFactory(applicationContext),
+                Clock.DEFAULT,
+                mediaSourceFactory
+            )
+            transformer = Transformer.Builder(applicationContext)
+                .setLooper(Looper.getMainLooper())
+                .setAssetLoaderFactory(assetLoaderFactory)
+                .addListener(object : Transformer.Listener {
+                    override fun onCompleted(composition: Composition, exportResult: ExportResult) {
+                        completion.complete(null)
+                    }
+
+                    override fun onError(
+                        composition: Composition,
+                        exportResult: ExportResult,
+                        exportException: ExportException
+                    ) {
+                        completion.complete(exportException)
+                    }
+                })
+                .build()
+            transformer.start(
+                MediaItem.Builder().setUri(inputUri).setMimeType(MimeTypes.APPLICATION_M3U8).build(),
+                output.absolutePath
+            )
         }
-        val cipher = Cipher.getInstance("AES/CBC/PKCS5Padding")
-        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), IvParameterSpec(iv))
-        return cipher.doFinal(bytes)
-    }
 
-    private fun hexToBytes(value: String): ByteArray {
-        val padded = value.padStart(32, '0').takeLast(32)
-        return ByteArray(padded.length / 2) { index -> padded.substring(index * 2, index * 2 + 2).toInt(16).toByte() }
-    }
-
-    private fun getText(url: String, referer: String): String = open(url, referer).bufferedReader().use { it.readText() }
-
-    private fun open(url: String, referer: String): InputStream {
-        return connection(url, referer, "").inputStream
+        try {
+            val holder = ProgressHolder()
+            while (!completion.isCompleted) {
+                if (isStopped) {
+                    withContext(Dispatchers.Main.immediate) { transformer.cancel() }
+                    error("Download cancelled")
+                }
+                val percent = withContext(Dispatchers.Main.immediate) {
+                    if (transformer.getProgress(holder) == Transformer.PROGRESS_STATE_AVAILABLE) holder.progress.coerceIn(0, 99)
+                    else 0
+                }
+                val currentBytes = output.length()
+                setProgress(progressData(anime, episode, percent, currentBytes, estimate, 0, true))
+                setForeground(foregroundInfo(anime, episode, percent))
+                delay(500)
+            }
+            completion.await()?.let { throw it }
+            require(output.isFile && output.length() > 0) { "The HLS export produced no playable file" }
+            return output
+        } catch (error: Throwable) {
+            withContext(Dispatchers.Main.immediate) { transformer.cancel() }
+            output.delete()
+            throw error
+        } finally {
+            syntheticManifest?.delete()
+        }
     }
 
     private fun connection(url: String, referer: String, authToken: String): HttpURLConnection =
         (URL(url).openConnection() as HttpURLConnection).apply {
-            connectTimeout = 30_000; readTimeout = 30_000; instanceFollowRedirects = true
+            connectTimeout = 30_000
+            readTimeout = 30_000
+            instanceFollowRedirects = true
             setRequestProperty("User-Agent", KairoRepository.USER_AGENT)
             setRequestProperty("Referer", referer)
             if (authToken.isNotBlank()) setRequestProperty("X-Emby-Token", authToken)
@@ -256,7 +331,12 @@ class AnimeDownloadWorker(context: Context, parameters: WorkerParameters) : Coro
         else -> "video/mp4"
     }
 
-    private fun sanitize(value: String): String = value.replace(Regex("[\\\\/:*?\"<>|]"), " ").replace(Regex("\\s+"), " ").trim().take(100)
+    private fun hlsValue(value: String): String = value.replace("\"", "%22").replace("\r", "").replace("\n", "")
 
-    companion object { private const val CHANNEL = "kairo_downloads" }
+    private fun sanitize(value: String): String = value.replace(Regex("[\\\\/:*?\"<>|]"), " ")
+        .replace(Regex("\\s+"), " ").trim().take(100)
+
+    companion object {
+        private const val CHANNEL = "kairo_downloads"
+    }
 }

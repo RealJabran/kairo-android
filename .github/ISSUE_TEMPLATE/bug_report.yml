@@ -1,0 +1,57 @@
+name: Bug report
+description: Report a reproducible problem in Kairo
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Thanks for reporting a problem. Remove credentials, personalized add-on URLs, private IP addresses, and media links before submitting.
+  - type: input
+    id: version
+    attributes:
+      label: Kairo version
+      placeholder: 2.2.0
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: Device and Android version
+      placeholder: Pixel 8 — Android 16
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Discover or search
+        - Source or add-on setup
+        - Streaming
+        - Downloads
+        - Player or captions
+        - Local library
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open…
+        2. Tap…
+        3. Observe…
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add sanitized screenshots or logs if useful.

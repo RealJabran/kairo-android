@@ -9,7 +9,7 @@ GRADLE_VERSION="9.1.0"
 GRADLE_ZIP="$TOOLS_DIR/gradle-$GRADLE_VERSION-bin.zip"
 GRADLE_HOME="$TOOLS_DIR/gradle-$GRADLE_VERSION"
 JDK_ARCHIVE="$TOOLS_DIR/temurin-jdk-17.tar.gz"
-JDK_HOME="$TOOLS_DIR/jdk-17.0.19+10"
+LOCAL_JDK_HOME="$TOOLS_DIR/jdk-17.0.19+10"
 
 mkdir -p "$TOOLS_DIR" "$SDK_DIR" "$OUTPUT_DIR"
 mkdir -p "$SDK_DIR/licenses"
@@ -17,15 +17,17 @@ if [[ ! -s "$SDK_DIR/licenses/android-sdk-license" ]]; then
   printf '%s\n' 'd56f5187479451eabf01fb78af6dfcb131a6481e' '24333f8a63b6825ea9c5514f83c2829b004d1fee' > "$SDK_DIR/licenses/android-sdk-license"
 fi
 
-if [[ ! -x "$JDK_HOME/bin/javac" ]]; then
-  if [[ ! -s "$JDK_ARCHIVE" ]]; then
-    echo "Downloading the private Temurin JDK 17 build tool..."
-    wget -c -O "$JDK_ARCHIVE" "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.19%2B10/OpenJDK17U-jdk_x64_linux_hotspot_17.0.19_10.tar.gz"
+if [[ -z "${JAVA_HOME:-}" || ! -x "$JAVA_HOME/bin/javac" ]]; then
+  if [[ ! -x "$LOCAL_JDK_HOME/bin/javac" ]]; then
+    if [[ ! -s "$JDK_ARCHIVE" ]]; then
+      echo "Downloading the private Temurin JDK 17 build tool..."
+      wget -c -O "$JDK_ARCHIVE" "https://github.com/adoptium/temurin17-binaries/releases/download/jdk-17.0.19%2B10/OpenJDK17U-jdk_x64_linux_hotspot_17.0.19_10.tar.gz"
+    fi
+    tar -xzf "$JDK_ARCHIVE" -C "$TOOLS_DIR"
   fi
-  tar -xzf "$JDK_ARCHIVE" -C "$TOOLS_DIR"
+  export JAVA_HOME="$LOCAL_JDK_HOME"
 fi
 
-export JAVA_HOME="$JDK_HOME"
 export PATH="$JAVA_HOME/bin:$PATH"
 
 if [[ ! -x "$GRADLE_HOME/bin/gradle" ]]; then
@@ -42,6 +44,6 @@ printf 'sdk.dir=%s\n' "$SDK_DIR" > "$PROJECT_DIR/local.properties"
 echo "Building Kairo..."
 "$GRADLE_HOME/bin/gradle" --no-daemon -Pandroid.builder.sdkDownload=true :app:assembleDebug
 
-cp "$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk" "$OUTPUT_DIR/Kairo-2.1.1-test.apk"
+cp "$PROJECT_DIR/app/build/outputs/apk/debug/app-debug.apk" "$OUTPUT_DIR/Kairo-2.2.0.apk"
 echo
-echo "APK ready: $OUTPUT_DIR/Kairo-2.1.1-test.apk"
+echo "APK ready: $OUTPUT_DIR/Kairo-2.2.0.apk"

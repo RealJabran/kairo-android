@@ -80,6 +80,7 @@ class KairoRepository(private val context: Context) {
             .putLong("estimatedBytes", quality.estimatedBytes)
             .putString("delivery", quality.delivery.name)
             .putString("container", quality.container)
+            .putString("hlsAudioUrl", quality.hlsAudioUrl)
             .putString("authToken", source.authToken)
             .putString("animeId", anime.id)
             .putString("animeImageUrl", anime.imageUrl)
@@ -114,7 +115,7 @@ class KairoRepository(private val context: Context) {
         adapters[source.kind] ?: error("Unsupported source type: ${source.kind}")
 
     companion object {
-        const val USER_AGENT = "Mozilla/5.0 (Android 14; Mobile) AppleWebKit/537.36 Kairo/2.1.1"
+        const val USER_AGENT = "Mozilla/5.0 (Android 14; Mobile) AppleWebKit/537.36 Kairo/2.2"
 
         fun resolveUrl(value: String, base: String): String {
             if (value.startsWith("http://") || value.startsWith("https://")) return value
